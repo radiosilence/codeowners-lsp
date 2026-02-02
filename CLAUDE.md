@@ -1,6 +1,6 @@
 # codeowners-lsp
 
-Rust LSP providing CODEOWNERS info via hover, inlay hints, and code actions for taking ownership.
+Rust LSP for CODEOWNERS with diagnostics, navigation, and code actions.
 
 ## Build & Test
 
@@ -13,27 +13,39 @@ cargo fmt            # always run after changes
 
 ## Architecture
 
-Single-file LSP in `src/main.rs` using `tower-lsp`. The `codeowners` crate handles parsing (read-only), we handle writes manually by parsing/modifying/serializing the file.
+Single-file LSP in `src/main.rs` using `tower-lsp`. The `codeowners` crate handles matching (read-only), we handle parsing/validation/writes ourselves.
 
 Key structs:
+
 - `Backend` - LSP server state, implements `LanguageServer` trait
-- `Settings` - config from init options (`path`, `individual`, `team`)
-- `CodeownersLine` - parsed line representation for file modification
+- `Settings` - config from init options
+- `CodeownersLine` / `ParsedLine` - parsed line representation with positions
+- `FileCache` - cached file list for pattern matching
+- `GitHubCache` - cached GitHub validation results
 
 ## LSP Capabilities
 
-- Hover: ownership info on any code
+**Any file:**
+
+- Hover: ownership info
 - Inlay hints: ownership at line 0
-- Code actions: take ownership (individual/team/custom), add to existing entry
-- Execute command: applies the ownership changes to CODEOWNERS file
+- Go-to-definition: jump to matching CODEOWNERS rule
+- Code actions: take ownership (individual/team/custom)
+
+**CODEOWNERS file:**
+
+- Diagnostics: invalid patterns, invalid owners, no matches, dead rules, coverage
+- Inlay hints: file match count per rule
+- Code actions: remove dead rules, dedupe owners, add catch-all
 
 ## Config
 
-Init options:
 ```json
 {
   "path": "custom/CODEOWNERS",
   "individual": "@username",
-  "team": "@org/team-name"
+  "team": "@org/team-name",
+  "github_token": "env:GITHUB_TOKEN",
+  "validate_owners": false
 }
 ```

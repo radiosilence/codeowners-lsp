@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Diagnostics** for CODEOWNERS file:
+  - Invalid glob pattern syntax (error)
+  - Invalid owner format (error)
+  - Patterns matching no files (warning)
+  - Duplicate patterns / dead rules (hint with "unnecessary" tag)
+  - Duplicate owners on same line (warning)
+  - Rules with no owners (warning)
+  - Coverage: shows count of unowned files (info)
+- **Inlay hints** in CODEOWNERS file showing file match count per rule
+- **Go-to-definition** from any file jumps to its matching CODEOWNERS rule
+- **Code actions** for CODEOWNERS diagnostics:
+  - Remove shadowed/dead rules
+  - Remove duplicate owners
+  - Add owner to rules with no owners
+  - Add catch-all rule for unowned files
+- **GitHub validation** (optional): validates @user and @org/team against GitHub API
+  - Requires `github_token` and `validate_owners: true` in settings
+
+### Changed
+
+- Refactored codebase into modules with comprehensive test coverage (39 tests)
+
 ## [0.2.2] - 2026-02-02
 
 ### Fixed

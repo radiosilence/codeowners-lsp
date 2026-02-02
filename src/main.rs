@@ -1,3 +1,11 @@
+mod diagnostics;
+mod file_cache;
+mod github;
+mod parser;
+mod pattern;
+mod validation;
+
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -8,73 +16,14 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-/// Represents a parsed line from a CODEOWNERS file
-#[derive(Debug, Clone)]
-enum CodeownersLine {
-    /// A comment line (starts with #)
-    Comment(String),
-    /// An empty line
-    Empty,
-    /// A rule with pattern and owners
-    Rule {
-        pattern: String,
-        owners: Vec<String>,
-    },
-}
-
-impl std::fmt::Display for CodeownersLine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CodeownersLine::Comment(c) => write!(f, "{}", c),
-            CodeownersLine::Empty => Ok(()),
-            CodeownersLine::Rule { pattern, owners } => {
-                write!(f, "{} {}", pattern, owners.join(" "))
-            }
-        }
-    }
-}
-
-/// Parse a CODEOWNERS file into structured lines
-fn parse_codeowners_file(content: &str) -> Vec<CodeownersLine> {
-    content
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                CodeownersLine::Empty
-            } else if trimmed.starts_with('#') {
-                CodeownersLine::Comment(line.to_string())
-            } else {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.is_empty() {
-                    CodeownersLine::Empty
-                } else {
-                    CodeownersLine::Rule {
-                        pattern: parts[0].to_string(),
-                        owners: parts[1..].iter().map(|s| s.to_string()).collect(),
-                    }
-                }
-            }
-        })
-        .collect()
-}
-
-/// Write parsed lines back to a string
-fn serialize_codeowners(lines: &[CodeownersLine]) -> String {
-    lines
-        .iter()
-        .map(|l| l.to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Find the best insertion point for a new pattern (maintains specificity order)
-fn find_insertion_point(lines: &[CodeownersLine], _pattern: &str) -> usize {
-    // CODEOWNERS rules are matched last-match-wins, so more specific patterns
-    // should come later in the file. We'll insert at the end by default.
-    // A smarter implementation could analyze pattern specificity.
-    lines.len()
-}
+use diagnostics::compute_diagnostics_sync;
+use file_cache::FileCache;
+use github::GitHubClient;
+use parser::{
+    find_insertion_point, parse_codeowners_file, parse_codeowners_file_with_positions,
+    serialize_codeowners, CodeownersLine,
+};
+use pattern::pattern_matches;
 
 #[derive(Debug, Default, Deserialize)]
 struct Settings {
@@ -84,15 +33,21 @@ struct Settings {
     individual: Option<String>,
     /// Team owner identifier (e.g. @org/team-name)
     team: Option<String>,
+    /// GitHub token for validating owners (reads from env if prefixed with "env:")
+    github_token: Option<String>,
+    /// Whether to validate owners against GitHub API
+    #[serde(default)]
+    validate_owners: bool,
 }
 
-#[allow(dead_code)]
 struct Backend {
     client: Client,
     workspace_root: RwLock<Option<PathBuf>>,
     codeowners: RwLock<Option<Owners>>,
     codeowners_path: RwLock<Option<PathBuf>>,
     settings: RwLock<Settings>,
+    file_cache: RwLock<Option<FileCache>>,
+    github_client: GitHubClient,
 }
 
 impl Backend {
@@ -103,7 +58,21 @@ impl Backend {
             codeowners: RwLock::new(None),
             codeowners_path: RwLock::new(None),
             settings: RwLock::new(Settings::default()),
+            file_cache: RwLock::new(None),
+            github_client: GitHubClient::new(),
         }
+    }
+
+    /// Get the GitHub token from settings (resolving env: prefix)
+    fn get_github_token(&self) -> Option<String> {
+        let settings = self.settings.read().unwrap();
+        settings.github_token.as_ref().and_then(|token| {
+            if let Some(env_var) = token.strip_prefix("env:") {
+                std::env::var(env_var).ok()
+            } else {
+                Some(token.clone())
+            }
+        })
     }
 
     fn load_codeowners(&self) -> Option<PathBuf> {
@@ -135,6 +104,13 @@ impl Backend {
         None
     }
 
+    fn refresh_file_cache(&self) {
+        let root = self.workspace_root.read().unwrap();
+        if let Some(root) = root.as_ref() {
+            *self.file_cache.write().unwrap() = Some(FileCache::new(root));
+        }
+    }
+
     fn get_owners_for_file(&self, uri: &Url) -> Option<String> {
         let root = self.workspace_root.read().unwrap();
         let root = root.as_ref()?;
@@ -149,6 +125,342 @@ impl Backend {
         let owner_strs: Vec<String> = owners.iter().map(|o| o.to_string()).collect();
 
         Some(owner_strs.join(" "))
+    }
+
+    /// Compute diagnostics for the CODEOWNERS file
+    async fn compute_diagnostics(&self, content: &str) -> Vec<Diagnostic> {
+        // Check if GitHub validation is enabled
+        let (validate_owners, token) = {
+            let settings = self.settings.read().unwrap();
+            let enabled = settings.validate_owners;
+            let token = self.get_github_token();
+            (enabled && token.is_some(), token)
+        };
+
+        // Phase 1: Synchronous diagnostics (holds file_cache lock)
+        let (mut diagnostics, owners_to_validate) = {
+            let file_cache = self.file_cache.read().unwrap();
+            compute_diagnostics_sync(content, file_cache.as_ref())
+        };
+
+        // Phase 2: Async GitHub validation (no locks held)
+        if validate_owners {
+            if let Some(token) = token {
+                diagnostics::add_github_diagnostics(
+                    &mut diagnostics,
+                    owners_to_validate,
+                    &self.github_client,
+                    &token,
+                )
+                .await;
+            }
+        }
+
+        diagnostics
+    }
+
+    /// Check if a URI is the CODEOWNERS file
+    fn is_codeowners_file(&self, uri: &Url) -> bool {
+        let codeowners_path = self.codeowners_path.read().unwrap();
+        if let Some(ref path) = *codeowners_path {
+            if let Ok(file_path) = uri.to_file_path() {
+                return file_path == *path;
+            }
+        }
+        false
+    }
+
+    /// Generate code actions for CODEOWNERS file diagnostics
+    async fn codeowners_code_actions(
+        &self,
+        params: &CodeActionParams,
+    ) -> Result<Option<CodeActionResponse>> {
+        let uri = &params.text_document.uri;
+        let codeowners_path = self.codeowners_path.read().unwrap().clone();
+        let path = match codeowners_path {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+
+        let lines: Vec<&str> = content.lines().collect();
+        let mut actions = Vec::new();
+
+        // Check each diagnostic in the request
+        for diagnostic in &params.context.diagnostics {
+            let line_num = diagnostic.range.start.line as usize;
+
+            // Handle "shadowed rule" diagnostics - offer to remove the dead rule
+            if diagnostic.message.contains("shadowed by") && line_num < lines.len() {
+                // Create edit to delete this line
+                let delete_range = Range {
+                    start: Position {
+                        line: line_num as u32,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: (line_num + 1) as u32,
+                        character: 0,
+                    },
+                };
+
+                let mut changes = HashMap::new();
+                changes.insert(
+                    uri.clone(),
+                    vec![TextEdit {
+                        range: delete_range,
+                        new_text: String::new(),
+                    }],
+                );
+
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: "Remove shadowed rule".to_string(),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![diagnostic.clone()]),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                        ..Default::default()
+                    }),
+                    command: None,
+                    is_preferred: Some(true),
+                    disabled: None,
+                    data: None,
+                }));
+            }
+
+            // Handle "duplicate owner" diagnostics - offer to dedupe
+            if diagnostic.message.contains("Duplicate owner") && line_num < lines.len() {
+                let line = lines[line_num];
+                let parts: Vec<&str> = line.split_whitespace().collect();
+
+                if !parts.is_empty() {
+                    let pattern = parts[0];
+                    let owners: Vec<&str> = parts[1..].to_vec();
+
+                    // Dedupe owners while preserving order
+                    let mut seen = HashSet::new();
+                    let deduped: Vec<&str> =
+                        owners.into_iter().filter(|o| seen.insert(*o)).collect();
+
+                    let new_line = format!("{} {}", pattern, deduped.join(" "));
+
+                    let edit_range = Range {
+                        start: Position {
+                            line: line_num as u32,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: line_num as u32,
+                            character: line.len() as u32,
+                        },
+                    };
+
+                    let mut changes = HashMap::new();
+                    changes.insert(
+                        uri.clone(),
+                        vec![TextEdit {
+                            range: edit_range,
+                            new_text: new_line,
+                        }],
+                    );
+
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: "Remove duplicate owners".to_string(),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![diagnostic.clone()]),
+                        edit: Some(WorkspaceEdit {
+                            changes: Some(changes),
+                            ..Default::default()
+                        }),
+                        command: None,
+                        is_preferred: Some(true),
+                        disabled: None,
+                        data: None,
+                    }));
+                }
+            }
+
+            // Handle "no owners" diagnostics - offer to add configured owners
+            if diagnostic.message.contains("Rule has no owners") && line_num < lines.len() {
+                let line = lines[line_num];
+                let pattern = line.split_whitespace().next().unwrap_or("");
+                let settings = self.settings.read().unwrap();
+
+                if let Some(ref individual) = settings.individual {
+                    let new_line = format!("{} {}", pattern, individual);
+                    let edit_range = Range {
+                        start: Position {
+                            line: line_num as u32,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: line_num as u32,
+                            character: line.len() as u32,
+                        },
+                    };
+
+                    let mut changes = HashMap::new();
+                    changes.insert(
+                        uri.clone(),
+                        vec![TextEdit {
+                            range: edit_range,
+                            new_text: new_line,
+                        }],
+                    );
+
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: format!("Add {} as owner", individual),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![diagnostic.clone()]),
+                        edit: Some(WorkspaceEdit {
+                            changes: Some(changes),
+                            ..Default::default()
+                        }),
+                        command: None,
+                        is_preferred: None,
+                        disabled: None,
+                        data: None,
+                    }));
+                }
+
+                if let Some(ref team) = settings.team {
+                    let new_line = format!("{} {}", pattern, team);
+                    let edit_range = Range {
+                        start: Position {
+                            line: line_num as u32,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: line_num as u32,
+                            character: line.len() as u32,
+                        },
+                    };
+
+                    let mut changes = HashMap::new();
+                    changes.insert(
+                        uri.clone(),
+                        vec![TextEdit {
+                            range: edit_range,
+                            new_text: new_line,
+                        }],
+                    );
+
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: format!("Add {} as owner", team),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![diagnostic.clone()]),
+                        edit: Some(WorkspaceEdit {
+                            changes: Some(changes),
+                            ..Default::default()
+                        }),
+                        command: None,
+                        is_preferred: None,
+                        disabled: None,
+                        data: None,
+                    }));
+                }
+            }
+
+            // Handle "files have no code owners" (coverage) - offer to add catch-all rule
+            if diagnostic.message.contains("files have no code owners") {
+                let settings = self.settings.read().unwrap();
+                let last_line = lines.len() as u32;
+
+                // Offer to add catch-all rule with configured owners
+                if let Some(ref individual) = settings.individual {
+                    let new_line = format!("* {}\n", individual);
+                    let insert_pos = Position {
+                        line: last_line,
+                        character: 0,
+                    };
+
+                    let mut changes = HashMap::new();
+                    changes.insert(
+                        uri.clone(),
+                        vec![TextEdit {
+                            range: Range {
+                                start: insert_pos,
+                                end: insert_pos,
+                            },
+                            new_text: new_line,
+                        }],
+                    );
+
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: format!("Add catch-all rule: * {}", individual),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![diagnostic.clone()]),
+                        edit: Some(WorkspaceEdit {
+                            changes: Some(changes),
+                            ..Default::default()
+                        }),
+                        command: None,
+                        is_preferred: None,
+                        disabled: None,
+                        data: None,
+                    }));
+                }
+
+                if let Some(ref team) = settings.team {
+                    let new_line = format!("* {}\n", team);
+                    let insert_pos = Position {
+                        line: last_line,
+                        character: 0,
+                    };
+
+                    let mut changes = HashMap::new();
+                    changes.insert(
+                        uri.clone(),
+                        vec![TextEdit {
+                            range: Range {
+                                start: insert_pos,
+                                end: insert_pos,
+                            },
+                            new_text: new_line,
+                        }],
+                    );
+
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: format!("Add catch-all rule: * {}", team),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![diagnostic.clone()]),
+                        edit: Some(WorkspaceEdit {
+                            changes: Some(changes),
+                            ..Default::default()
+                        }),
+                        command: None,
+                        is_preferred: None,
+                        disabled: None,
+                        data: None,
+                    }));
+                }
+            }
+        }
+
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(actions))
+        }
+    }
+
+    /// Publish diagnostics for the CODEOWNERS file
+    async fn publish_codeowners_diagnostics(&self) {
+        let codeowners_path = self.codeowners_path.read().unwrap().clone();
+        if let Some(path) = codeowners_path {
+            if let Ok(content) = fs::read_to_string(&path) {
+                let diagnostics = self.compute_diagnostics(&content).await;
+                if let Ok(uri) = Url::from_file_path(&path) {
+                    self.client
+                        .publish_diagnostics(uri, diagnostics, None)
+                        .await;
+                }
+            }
+        }
     }
 
     /// Add a new ownership entry to the CODEOWNERS file
@@ -218,7 +530,6 @@ impl Backend {
                 ..
             } = line
             {
-                // Simple glob matching - this is approximate
                 if pattern_matches(rule_pattern, relative_path) {
                     matching_idx = Some(idx);
                     break;
@@ -245,36 +556,26 @@ impl Backend {
 
         Ok(())
     }
-}
 
-/// Simple glob pattern matching for CODEOWNERS patterns
-fn pattern_matches(pattern: &str, path: &str) -> bool {
-    let pattern = pattern.trim_start_matches('/');
+    /// Find the CODEOWNERS rule that matches a given file
+    fn find_matching_rule(&self, file_path: &str) -> Option<(u32, String)> {
+        let codeowners_path = self.codeowners_path.read().unwrap();
+        let path = codeowners_path.as_ref()?;
 
-    // Handle ** (matches everything)
-    if pattern == "*" || pattern == "**" {
-        return true;
+        let content = fs::read_to_string(path).ok()?;
+        let lines = parse_codeowners_file_with_positions(&content);
+
+        // Iterate in reverse since last match wins
+        for parsed_line in lines.iter().rev() {
+            if let CodeownersLine::Rule { pattern, .. } = &parsed_line.content {
+                if pattern_matches(pattern, file_path) {
+                    return Some((parsed_line.line_number, pattern.clone()));
+                }
+            }
+        }
+
+        None
     }
-
-    // Handle directory patterns like /dir/ or dir/
-    if pattern.ends_with('/') {
-        let dir = pattern.trim_end_matches('/');
-        return path.starts_with(dir);
-    }
-
-    // Handle patterns ending with /* or /**
-    if pattern.ends_with("/**") || pattern.ends_with("/*") {
-        let dir = pattern.trim_end_matches("/**").trim_end_matches("/*");
-        return path.starts_with(dir);
-    }
-
-    // Handle extension patterns like *.rs
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        return path.ends_with(suffix);
-    }
-
-    // Exact match or prefix match for directories
-    path == pattern || path.starts_with(&format!("{}/", pattern))
 }
 
 #[tower_lsp::async_trait]
@@ -293,13 +594,21 @@ impl LanguageServer for Backend {
         }
 
         self.load_codeowners();
+        self.refresh_file_cache();
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::NONE,
+                text_document_sync: Some(TextDocumentSyncCapability::Options(
+                    TextDocumentSyncOptions {
+                        open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::FULL),
+                        save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
+                            include_text: Some(true),
+                        })),
+                        ..Default::default()
+                    },
                 )),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
@@ -313,6 +622,7 @@ impl LanguageServer for Backend {
                     ],
                     work_done_progress_options: Default::default(),
                 }),
+                definition_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -322,10 +632,55 @@ impl LanguageServer for Backend {
         })
     }
 
-    async fn initialized(&self, _: InitializedParams) {}
+    async fn initialized(&self, _: InitializedParams) {
+        // Publish initial diagnostics for CODEOWNERS file
+        self.publish_codeowners_diagnostics().await;
+    }
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
+    }
+
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        let uri = &params.text_document.uri;
+        if self.is_codeowners_file(uri) {
+            let diagnostics = self.compute_diagnostics(&params.text_document.text).await;
+            self.client
+                .publish_diagnostics(uri.clone(), diagnostics, None)
+                .await;
+        }
+    }
+
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let uri = &params.text_document.uri;
+        if self.is_codeowners_file(uri) {
+            // Get the full text from the change events (we requested FULL sync)
+            if let Some(change) = params.content_changes.first() {
+                let diagnostics = self.compute_diagnostics(&change.text).await;
+                self.client
+                    .publish_diagnostics(uri.clone(), diagnostics, None)
+                    .await;
+            }
+        }
+    }
+
+    async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        let uri = &params.text_document.uri;
+        if self.is_codeowners_file(uri) {
+            // Reload codeowners and refresh cache
+            self.load_codeowners();
+            self.refresh_file_cache();
+
+            // Publish diagnostics
+            if let Some(text) = params.text {
+                let diagnostics = self.compute_diagnostics(&text).await;
+                self.client
+                    .publish_diagnostics(uri.clone(), diagnostics, None)
+                    .await;
+            } else {
+                self.publish_codeowners_diagnostics().await;
+            }
+        }
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -355,8 +710,69 @@ impl LanguageServer for Backend {
         }))
     }
 
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+
+        // Don't navigate from CODEOWNERS file itself
+        if self.is_codeowners_file(uri) {
+            return Ok(None);
+        }
+
+        let root = self.workspace_root.read().unwrap();
+        let root = match root.as_ref() {
+            Some(r) => r.clone(),
+            None => return Ok(None),
+        };
+        drop(root);
+
+        let file_path = match uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+
+        let relative_path =
+            match file_path.strip_prefix(self.workspace_root.read().unwrap().as_ref().unwrap()) {
+                Ok(p) => p.to_string_lossy().to_string(),
+                Err(_) => return Ok(None),
+            };
+
+        // Find the matching rule
+        if let Some((line_number, _pattern)) = self.find_matching_rule(&relative_path) {
+            let codeowners_path = self.codeowners_path.read().unwrap();
+            if let Some(path) = codeowners_path.as_ref() {
+                if let Ok(codeowners_uri) = Url::from_file_path(path) {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                        uri: codeowners_uri,
+                        range: Range {
+                            start: Position {
+                                line: line_number,
+                                character: 0,
+                            },
+                            end: Position {
+                                line: line_number,
+                                character: u32::MAX,
+                            },
+                        },
+                    })));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
+
+        // Handle CODEOWNERS file code actions (fix diagnostics)
+        if self.is_codeowners_file(uri) {
+            return self.codeowners_code_actions(&params).await;
+        }
+
+        // Handle regular file code actions (take ownership)
         let file_path = match uri.to_file_path() {
             Ok(p) => p,
             Err(_) => return Ok(None),
@@ -485,6 +901,56 @@ impl LanguageServer for Backend {
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
+
+        // For CODEOWNERS file, show file match counts
+        if self.is_codeowners_file(uri) {
+            let codeowners_path = self.codeowners_path.read().unwrap();
+            if let Some(path) = codeowners_path.as_ref() {
+                if let Ok(content) = fs::read_to_string(path) {
+                    let lines = parse_codeowners_file_with_positions(&content);
+                    let file_cache = self.file_cache.read().unwrap();
+
+                    if let Some(ref cache) = *file_cache {
+                        let hints: Vec<InlayHint> = lines
+                            .iter()
+                            .filter_map(|line| {
+                                if let CodeownersLine::Rule { pattern, .. } = &line.content {
+                                    let count = cache.count_matches(pattern);
+                                    Some(InlayHint {
+                                        position: Position {
+                                            line: line.line_number,
+                                            character: line.pattern_end,
+                                        },
+                                        label: InlayHintLabel::String(format!(
+                                            " ({} {})",
+                                            count,
+                                            if count == 1 { "file" } else { "files" }
+                                        )),
+                                        kind: None,
+                                        text_edits: None,
+                                        tooltip: Some(InlayHintTooltip::String(format!(
+                                            "This pattern matches {} {} in the repository",
+                                            count,
+                                            if count == 1 { "file" } else { "files" }
+                                        ))),
+                                        padding_left: Some(true),
+                                        padding_right: Some(false),
+                                        data: None,
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        return Ok(Some(hints));
+                    }
+                }
+            }
+            return Ok(None);
+        }
+
+        // For other files, show ownership info
         let Some(owners) = self.get_owners_for_file(uri) else {
             return Ok(None);
         };
@@ -508,12 +974,15 @@ impl LanguageServer for Backend {
 
     async fn did_change_watched_files(&self, _params: DidChangeWatchedFilesParams) {
         self.load_codeowners();
+        self.refresh_file_cache();
+        self.publish_codeowners_diagnostics().await;
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         if let Ok(settings) = serde_json::from_value::<Settings>(params.settings) {
             *self.settings.write().unwrap() = settings;
             self.load_codeowners();
+            self.refresh_file_cache();
         }
     }
 
@@ -525,7 +994,6 @@ impl LanguageServer for Backend {
         let args = params.arguments;
 
         // Parse arguments: [uri, pattern, owner?]
-        // uri is passed but not currently used - we operate on the pattern
         if args.first().and_then(|v| v.as_str()).is_none() {
             return Err(tower_lsp::jsonrpc::Error::invalid_params(
                 "Missing URI argument",
@@ -540,11 +1008,8 @@ impl LanguageServer for Backend {
         let owner = args.get(2).and_then(|v| v.as_str());
 
         // For custom commands, we need the owner from the client
-        // The LSP client should prompt and re-invoke with the owner
         let is_custom = command.ends_with(".custom");
         if is_custom && owner.is_none() {
-            // Return a special response indicating we need user input
-            // The client should show an input dialog and re-invoke
             self.client
                 .show_message(
                     MessageType::INFO,
@@ -586,6 +1051,8 @@ impl LanguageServer for Backend {
             Ok(()) => {
                 // Reload codeowners after modification
                 self.load_codeowners();
+                self.refresh_file_cache();
+                self.publish_codeowners_diagnostics().await;
                 self.client
                     .show_message(
                         MessageType::INFO,
