@@ -69,15 +69,12 @@ jobs:
         run: |
           CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "Current version: $CURRENT"
-          
+
           git show HEAD~1:Cargo.toml > /tmp/old.toml 2>/dev/null || echo 'version = "0.0.0"' > /tmp/old.toml
           PREVIOUS=$(grep '^version' /tmp/old.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "Previous version: $PREVIOUS"
-          
-          if git ls-remote --tags origin | grep -q "refs/tags/v$CURRENT"; then
-            echo "Tag v$CURRENT exists, skipping"
-            echo "should_release=false" >> $GITHUB_OUTPUT
-          elif [ "$CURRENT" != "$PREVIOUS" ]; then
+
+          if [ "$CURRENT" != "$PREVIOUS" ]; then
             echo "Version changed!"
             echo "should_release=true" >> $GITHUB_OUTPUT
             echo "version=$CURRENT" >> $GITHUB_OUTPUT
@@ -162,6 +159,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Delete existing release and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="v${{ needs.check-version.outputs.version }}"
+          # Delete release if exists
+          gh release delete "$VERSION" --yes 2>/dev/null || true
+          # Delete tag if exists
+          git push origin ":refs/tags/$VERSION" 2>/dev/null || true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
