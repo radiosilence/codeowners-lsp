@@ -1,0 +1,3 @@
+# GitHub validation - fetches rich metadata for @owners
+github_token = "env:GITHUB_TOKEN"
+validate_owners = true

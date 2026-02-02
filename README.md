@@ -67,17 +67,23 @@ All heavy operations (file scanning, pattern matching, GitHub API calls) run in 
 
 ## Installation
 
-Download the latest release from [Releases](https://github.com/radiosilence/codeowners-lsp/releases).
+### mise (recommended)
 
-### Zed
-
-Use the [codeowners-zed](https://github.com/radiosilence/codeowners-zed) extension.
+```bash
+mise use -g github:radiosilence/codeowners-lsp@latest
+```
 
 ### Manual
+
+Download the latest release from [Releases](https://github.com/radiosilence/codeowners-lsp/releases).
 
 ```bash
 codeowners-lsp  # Communicates over stdio
 ```
+
+### Zed
+
+Use the [codeowners-zed](https://github.com/radiosilence/codeowners-zed) extension (handles installation automatically).
 
 ## Configuration
 
@@ -175,6 +181,7 @@ JSON settings can also be passed via LSP init options (these override TOML confi
 | Hover: rich team/user metadata        | ✅     |
 | fzf-style fuzzy path completion       | ✅     |
 | Background GitHub validation          | ✅     |
+| Real-time pattern validation          | ✅     |
 
 ## License
 

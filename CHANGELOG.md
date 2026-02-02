@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1] - 2026-02-02
+
+### Added
+
+- **Real-time pattern validation** - patterns are checked against file cache as you type, instant feedback on whether a pattern matches any files
+- **mise installation** - `mise use -g github:radiosilence/codeowners-lsp@latest`
+
 ## [0.6.0] - 2026-02-02
 
 ### Performance

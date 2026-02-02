@@ -1196,6 +1196,9 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = &params.text_document.uri;
         if let Some(change) = params.content_changes.first() {
+            // Get previous content for diffing (before we update)
+            let previous_content = self.open_documents.read().unwrap().get(uri).cloned();
+
             // Update tracked content
             self.open_documents
                 .write()
@@ -1213,8 +1216,26 @@ impl LanguageServer for Backend {
                     let settings = self.settings.read().unwrap();
                     settings.diagnostic_config()
                 };
-                let (diagnostics, owners_to_validate) =
+                let (mut diagnostics, owners_to_validate) =
                     compute_diagnostics_sync(&change.text, None, &diag_config);
+
+                // Check changed lines for pattern matches (real-time feedback)
+                if let Some(ref prev) = previous_content {
+                    let changed_lines = find_changed_lines(prev, &change.text);
+                    if !changed_lines.is_empty() {
+                        let file_cache = self.file_cache.read().unwrap();
+                        if let Some(ref cache) = *file_cache {
+                            let extra_diags = check_patterns_for_lines(
+                                &change.text,
+                                &changed_lines,
+                                cache,
+                                &diag_config,
+                            );
+                            diagnostics.extend(extra_diags);
+                        }
+                    }
+                }
+
                 self.client
                     .publish_diagnostics(uri.clone(), diagnostics, None)
                     .await;
@@ -1978,6 +1999,78 @@ impl LanguageServer for Backend {
             new_text: formatted,
         }]))
     }
+}
+
+/// Find which line numbers changed between two versions of content
+fn find_changed_lines(old: &str, new: &str) -> Vec<usize> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let mut changed = Vec::new();
+
+    // Compare line by line
+    let max_len = old_lines.len().max(new_lines.len());
+    for i in 0..max_len {
+        let old_line = old_lines.get(i).copied();
+        let new_line = new_lines.get(i).copied();
+        if old_line != new_line {
+            changed.push(i);
+        }
+    }
+
+    // Limit to avoid checking too many lines on large pastes
+    if changed.len() > 10 {
+        changed.truncate(10);
+    }
+
+    changed
+}
+
+/// Check patterns on specific lines and return pattern-no-match diagnostics
+fn check_patterns_for_lines(
+    content: &str,
+    line_numbers: &[usize],
+    file_cache: &file_cache::FileCache,
+    config: &DiagnosticConfig,
+) -> Vec<Diagnostic> {
+    use parser::CodeownersLine;
+
+    let mut diagnostics = Vec::new();
+    let parsed = parse_codeowners_file_with_positions(content);
+
+    for &line_num in line_numbers {
+        let line_num_u32 = line_num as u32;
+        // Find the parsed line for this line number
+        if let Some(parsed_line) = parsed.iter().find(|p| p.line_number == line_num_u32) {
+            if let CodeownersLine::Rule { ref pattern, .. } = parsed_line.content {
+                // Check if pattern matches any files
+                if !file_cache.has_matches(pattern) {
+                    if let Some(severity) =
+                        config.get("pattern-no-match", DiagnosticSeverity::WARNING)
+                    {
+                        diagnostics.push(Diagnostic {
+                            range: Range {
+                                start: Position {
+                                    line: line_num_u32,
+                                    character: parsed_line.pattern_start,
+                                },
+                                end: Position {
+                                    line: line_num_u32,
+                                    character: parsed_line.pattern_end,
+                                },
+                            },
+                            severity: Some(severity),
+                            code: Some(NumberOrString::String("pattern-no-match".to_string())),
+                            source: Some("codeowners".to_string()),
+                            message: format!("Pattern '{}' doesn't match any files", pattern),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    diagnostics
 }
 
 /// Find the @owner at a given character position in a line
