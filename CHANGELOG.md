@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1] - 2026-02-02
+
+### Fixed
+
+- Show "Owned by nobody" instead of empty output when file has no owners
+- CI now recreates tags/releases instead of failing if they exist
+
 ## [0.3.0] - 2026-02-02
 
 ### Added
