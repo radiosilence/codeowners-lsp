@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4] - 2026-02-02
+
+### Added
+
+- **CLI lint validates owners** - `codeowners-cli lint` now validates GitHub owners if `validate_owners = true` in config
+- **Respects persistent cache** - CLI uses and updates the same cache as LSP, checks staleness (24h)
+
 ## [0.6.3] - 2026-02-02
 
 ### Fixed

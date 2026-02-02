@@ -4,7 +4,7 @@ Language server for CODEOWNERS files with diagnostics, navigation, and code acti
 
 ## CLI
 
-```bash
+```zsh
 # Lint CODEOWNERS (auto-detects location)
 codeowners-cli lint
 codeowners-cli lint --json  # Machine-readable output for CI
@@ -31,7 +31,7 @@ codeowners-cli validate-owners --token ghp_xxx
 codeowners-cli tree
 
 # Generate shell completions
-codeowners-cli completions bash       # bash, zsh, fish, powershell, elvish
+codeowners-cli completions zsh       # zsh, zsh, fish, powershell, elvish
 ```
 
 ## LSP Features
@@ -69,7 +69,7 @@ All heavy operations (file scanning, pattern matching, GitHub API calls) run in 
 
 ### mise (recommended)
 
-```bash
+```zsh
 mise use -g github:radiosilence/codeowners-lsp@latest
 ```
 
@@ -77,7 +77,7 @@ mise use -g github:radiosilence/codeowners-lsp@latest
 
 Download the latest release from [Releases](https://github.com/radiosilence/codeowners-lsp/releases).
 
-```bash
+```zsh
 codeowners-lsp  # Communicates over stdio
 ```
 

@@ -81,7 +81,7 @@ async fn main() -> ExitCode {
     let args = Cli::parse();
 
     match args.command {
-        Commands::Lint { path, json } => commands::lint(path, json),
+        Commands::Lint { path, json } => commands::lint(path, json).await,
         Commands::Fmt { path, write } => commands::fmt(path, write),
         Commands::Fix { path, write } => commands::fix(path, write),
         Commands::Check { file } => commands::check(&file),
