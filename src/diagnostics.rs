@@ -32,7 +32,11 @@ pub fn compute_diagnostics_sync(
     let lines = parse_codeowners_file_with_positions(content);
 
     // Track patterns for dead rule detection
-    let mut seen_patterns: Vec<(String, u32)> = Vec::new();
+    // Use HashMap for O(1) exact duplicate detection
+    let mut exact_patterns: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    // Only store patterns that could subsume others (wildcards, directories)
+    let mut subsume_patterns: Vec<(String, u32)> = Vec::new();
 
     // Collect owners to validate via GitHub (line, offset, owner, len)
     let mut owners_to_validate: Vec<(u32, u32, String, u32)> = Vec::new();
@@ -129,42 +133,72 @@ pub fn compute_diagnostics_sync(
             }
 
             // Check for dead rules (earlier pattern completely shadowed by later)
-            for (prev_pattern, prev_line) in &seen_patterns {
-                if pattern_subsumes(prev_pattern, pattern) {
-                    let message = if prev_pattern == pattern {
-                        format!(
-                            "This rule is shadowed by a later rule on line {} with the same pattern",
-                            parsed_line.line_number + 1
-                        )
-                    } else {
-                        format!(
-                            "This rule is shadowed by a more general pattern '{}' on line {}",
-                            pattern,
-                            parsed_line.line_number + 1
-                        )
-                    };
-                    diagnostics.push(Diagnostic {
-                        range: Range {
-                            start: Position {
-                                line: *prev_line,
-                                character: 0,
-                            },
-                            end: Position {
-                                line: *prev_line,
-                                character: u32::MAX,
-                            },
+            let normalized_pattern = pattern.trim_start_matches('/');
+
+            // Fast path: check for exact duplicates via HashMap
+            let is_exact_duplicate = exact_patterns.contains_key(normalized_pattern);
+            if let Some(&prev_line) = exact_patterns.get(normalized_pattern) {
+                diagnostics.push(Diagnostic {
+                    range: Range {
+                        start: Position {
+                            line: prev_line,
+                            character: 0,
                         },
-                        severity: Some(DiagnosticSeverity::WARNING),
-                        code: Some(NumberOrString::String(codes::SHADOWED_RULE.to_string())),
-                        source: Some("codeowners".to_string()),
-                        message,
-                        tags: Some(vec![DiagnosticTag::UNNECESSARY]),
-                        ..Default::default()
-                    });
+                        end: Position {
+                            line: prev_line,
+                            character: u32::MAX,
+                        },
+                    },
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    code: Some(NumberOrString::String(codes::SHADOWED_RULE.to_string())),
+                    source: Some("codeowners".to_string()),
+                    message: format!(
+                        "This rule is shadowed by a later rule on line {} with the same pattern",
+                        parsed_line.line_number + 1
+                    ),
+                    tags: Some(vec![DiagnosticTag::UNNECESSARY]),
+                    ..Default::default()
+                });
+            }
+
+            // Only check subsumption against patterns that could subsume (wildcards, dirs)
+            // Skip if already found as exact duplicate to avoid double-reporting
+            if !is_exact_duplicate {
+                for (prev_pattern, prev_line) in &subsume_patterns {
+                    if pattern_subsumes(prev_pattern, pattern) {
+                        diagnostics.push(Diagnostic {
+                            range: Range {
+                                start: Position {
+                                    line: *prev_line,
+                                    character: 0,
+                                },
+                                end: Position {
+                                    line: *prev_line,
+                                    character: u32::MAX,
+                                },
+                            },
+                            severity: Some(DiagnosticSeverity::WARNING),
+                            code: Some(NumberOrString::String(codes::SHADOWED_RULE.to_string())),
+                            source: Some("codeowners".to_string()),
+                            message: format!(
+                                "This rule is shadowed by a more general pattern '{}' on line {}",
+                                pattern,
+                                parsed_line.line_number + 1
+                            ),
+                            tags: Some(vec![DiagnosticTag::UNNECESSARY]),
+                            ..Default::default()
+                        });
+                    }
                 }
             }
 
-            seen_patterns.push((pattern.clone(), parsed_line.line_number));
+            // Track this pattern
+            exact_patterns.insert(normalized_pattern.to_string(), parsed_line.line_number);
+
+            // Only track patterns that could potentially subsume others
+            if normalized_pattern.contains('*') || normalized_pattern.ends_with('/') {
+                subsume_patterns.push((normalized_pattern.to_string(), parsed_line.line_number));
+            }
 
             // Check for rules without owners
             if owners.is_empty() {

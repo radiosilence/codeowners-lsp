@@ -11,7 +11,7 @@
 ### Changed
 
 - **Shadowed rules now show as warnings** instead of hints (visible in editors by default)
-- **4x faster linting** via parallel file matching with rayon (e.g., 4.8s → 1.1s on 3800-rule repos)
+- **29x faster linting** via compiled patterns, parallel matching, and optimized algorithms (4.8s → 165ms on 3800-rule repos)
 
 ### Fixed
 

@@ -1,9 +1,62 @@
-/// Simple glob pattern matching for CODEOWNERS patterns
-pub fn pattern_matches(pattern: &str, path: &str) -> bool {
-    pattern_matches_impl(pattern, path)
+/// Pre-processed pattern for fast matching
+pub enum CompiledPattern {
+    /// Matches everything (* or **)
+    MatchAll,
+    /// Single-segment glob like *.rs - needs **/ prefix for matching
+    SingleSegmentGlob(String),
+    /// Multi-segment glob like src/**/*.rs
+    MultiSegmentGlob(String),
+    /// Directory pattern like src/ - matches prefix
+    Directory(String),
+    /// Exact path or directory prefix
+    Exact(String),
 }
 
-fn pattern_matches_impl(pattern: &str, path: &str) -> bool {
+impl CompiledPattern {
+    pub fn new(pattern: &str) -> Self {
+        let pattern = pattern.trim_start_matches('/');
+
+        if pattern == "*" || pattern == "**" {
+            return CompiledPattern::MatchAll;
+        }
+
+        if pattern.contains('*') {
+            if !pattern.contains('/') {
+                // Single segment like *.rs -> **/*.rs
+                return CompiledPattern::SingleSegmentGlob(format!("**/{}", pattern));
+            }
+            return CompiledPattern::MultiSegmentGlob(pattern.to_string());
+        }
+
+        if pattern.ends_with('/') {
+            return CompiledPattern::Directory(pattern.trim_end_matches('/').to_string());
+        }
+
+        CompiledPattern::Exact(pattern.to_string())
+    }
+
+    #[inline]
+    pub fn matches(&self, path: &str) -> bool {
+        match self {
+            CompiledPattern::MatchAll => true,
+            CompiledPattern::SingleSegmentGlob(glob) => fast_glob::glob_match(glob, path),
+            CompiledPattern::MultiSegmentGlob(glob) => fast_glob::glob_match(glob, path),
+            CompiledPattern::Directory(dir) => {
+                path.starts_with(dir.as_str())
+                    && (path.len() == dir.len() || path.as_bytes().get(dir.len()) == Some(&b'/'))
+            }
+            CompiledPattern::Exact(exact) => {
+                path == exact
+                    || (path.starts_with(exact.as_str())
+                        && path.as_bytes().get(exact.len()) == Some(&b'/'))
+            }
+        }
+    }
+}
+
+/// Simple glob pattern matching for CODEOWNERS patterns
+#[inline]
+pub fn pattern_matches(pattern: &str, path: &str) -> bool {
     let pattern = pattern.trim_start_matches('/');
 
     // Handle ** (matches everything)
@@ -11,10 +64,15 @@ fn pattern_matches_impl(pattern: &str, path: &str) -> bool {
         return true;
     }
 
-    // Handle complex patterns with * or ** - use full glob matching
-    // This handles: deployment/*/deploy/**, *crowdin*, src/**/test.rs, etc.
+    // Handle complex patterns with * or ** - use fast-glob
     if pattern.contains('*') {
-        return glob_match(pattern, path);
+        // CODEOWNERS semantics: single-segment patterns like *.rs match in ANY directory
+        // Convert *.rs to **/*.rs for fast-glob
+        if !pattern.contains('/') {
+            let glob_pattern = format!("**/{}", pattern);
+            return fast_glob::glob_match(&glob_pattern, path);
+        }
+        return fast_glob::glob_match(pattern, path);
     }
 
     // Handle directory patterns like /dir/ or dir/
@@ -28,143 +86,9 @@ fn pattern_matches_impl(pattern: &str, path: &str) -> bool {
     path == pattern || path.starts_with(&format!("{}/", pattern))
 }
 
-/// Simple glob matching with * wildcards
-fn glob_match(pattern: &str, path: &str) -> bool {
-    let pattern_parts: Vec<&str> = pattern.split('/').collect();
-    let path_parts: Vec<&str> = path.split('/').collect();
-
-    // Special case: single segment pattern like *.rs should match files in any directory
-    // This is CODEOWNERS semantics - *.rs means "any .rs file anywhere"
-    if pattern_parts.len() == 1 && pattern_parts[0].contains('*') {
-        // Match against the filename (last segment)
-        if let Some(filename) = path_parts.last() {
-            return segment_matches(pattern_parts[0], filename);
-        }
-        return false;
-    }
-
-    glob_match_parts(&pattern_parts, &path_parts)
-}
-
-fn glob_match_parts(pattern_parts: &[&str], path_parts: &[&str]) -> bool {
-    let mut pi = 0; // pattern index
-    let mut fi = 0; // file path index
-
-    while pi < pattern_parts.len() {
-        let pattern_part = pattern_parts[pi];
-
-        // Handle ** (matches zero or more path segments)
-        if pattern_part == "**" {
-            // If ** is the last pattern part, it matches everything remaining
-            if pi == pattern_parts.len() - 1 {
-                return true;
-            }
-
-            // Try matching ** against zero or more segments
-            for skip in 0..=(path_parts.len().saturating_sub(fi)) {
-                if glob_match_parts(&pattern_parts[pi + 1..], &path_parts[fi + skip..]) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        // No more path parts but still have pattern parts
-        if fi >= path_parts.len() {
-            return false;
-        }
-
-        let path_part = path_parts[fi];
-
-        // Handle * within a segment (e.g., *.rs, *crowdin*, create_service*)
-        if pattern_part.contains('*') {
-            if !segment_matches(pattern_part, path_part) {
-                return false;
-            }
-        } else if pattern_part != path_part {
-            // Exact segment match required
-            return false;
-        }
-
-        pi += 1;
-        fi += 1;
-    }
-
-    // All pattern parts consumed - check if all path parts consumed too
-    fi >= path_parts.len()
-}
-
-/// Match a single path segment against a pattern with * wildcards
-fn segment_matches(pattern: &str, segment: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-
-    let parts: Vec<&str> = pattern.split('*').collect();
-
-    if parts.len() == 1 {
-        // No wildcard
-        return pattern == segment;
-    }
-
-    if parts.len() == 2 {
-        // Simple case: prefix*suffix
-        let prefix = parts[0];
-        let suffix = parts[1];
-
-        if prefix.is_empty() && suffix.is_empty() {
-            return true; // Just "*"
-        }
-        if prefix.is_empty() {
-            return segment.ends_with(suffix);
-        }
-        if suffix.is_empty() {
-            return segment.starts_with(prefix);
-        }
-        return segment.starts_with(prefix)
-            && segment.ends_with(suffix)
-            && segment.len() >= prefix.len() + suffix.len();
-    }
-
-    // Multiple wildcards (e.g., *foo*bar*) - use sequential matching
-    if parts.is_empty() {
-        return true; // Pattern is just "*"
-    }
-
-    let first = parts[0];
-    if !first.is_empty() && !segment.starts_with(first) {
-        return false;
-    }
-
-    let mut remaining = if first.is_empty() {
-        segment
-    } else {
-        &segment[first.len()..]
-    };
-
-    for (i, part) in parts.iter().enumerate().skip(1) {
-        if part.is_empty() {
-            continue;
-        }
-        if i == parts.len() - 1 {
-            // Last part must match at the end
-            if !remaining.ends_with(part) {
-                return false;
-            }
-        } else {
-            // Middle part must exist somewhere
-            match remaining.find(part) {
-                Some(pos) => remaining = &remaining[pos + part.len()..],
-                None => return false,
-            }
-        }
-    }
-
-    true
-}
-
 /// Check if pattern `a` is subsumed by pattern `b` (i.e., everything `a` matches, `b` also matches).
 /// If true, and `b` comes after `a` in CODEOWNERS, then `a` is a dead rule.
+#[inline]
 pub fn pattern_subsumes(a: &str, b: &str) -> bool {
     let a = a.trim_start_matches('/');
     let b = b.trim_start_matches('/');
@@ -206,16 +130,21 @@ pub fn pattern_subsumes(a: &str, b: &str) -> bool {
 
     // /src/lib/ subsumed by /src/ (more specific dir under more general)
     if a_is_dir && b_is_dir {
-        return a_dir.starts_with(b_dir)
-            && (a_dir == b_dir || a_dir.starts_with(&format!("{}/", b_dir)));
+        return a_dir == b_dir || starts_with_dir(a_dir, b_dir);
     }
 
     // Exact file in directory: src/main.rs subsumed by src/ or src/**
     if b_is_dir && !a_is_dir {
-        return a.starts_with(b_dir) && (a == b_dir || a.starts_with(&format!("{}/", b_dir)));
+        return a == b_dir || starts_with_dir(a, b_dir);
     }
 
     false
+}
+
+/// Check if `path` starts with `dir` followed by `/`
+#[inline]
+fn starts_with_dir(path: &str, dir: &str) -> bool {
+    path.starts_with(dir) && path.as_bytes().get(dir.len()) == Some(&b'/')
 }
 
 #[cfg(test)]

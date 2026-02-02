@@ -6,7 +6,7 @@ use ignore::WalkBuilder;
 use rayon::prelude::*;
 
 use crate::parser::{CodeownersLine, ParsedLine};
-use crate::pattern::pattern_matches;
+use crate::pattern::{pattern_matches, CompiledPattern};
 
 /// Cached list of files in the workspace
 pub struct FileCache {
@@ -47,6 +47,10 @@ impl FileCache {
     /// Returns a set of pattern indices that have matches.
     /// Uses parallel iteration for performance on large repos.
     pub fn find_patterns_with_matches(&self, patterns: &[&str]) -> HashSet<usize> {
+        // Pre-compile all patterns once (avoids allocations per match)
+        let compiled: Vec<CompiledPattern> =
+            patterns.iter().map(|p| CompiledPattern::new(p)).collect();
+
         // Create atomic flags for each pattern (true = has match)
         let flags: Vec<AtomicBool> = (0..patterns.len())
             .map(|_| AtomicBool::new(false))
@@ -54,12 +58,12 @@ impl FileCache {
 
         // Process files in parallel
         self.files.par_iter().for_each(|file| {
-            for (i, pattern) in patterns.iter().enumerate() {
+            for (i, pattern) in compiled.iter().enumerate() {
                 // Skip if already matched (relaxed is fine, just an optimization)
                 if flags[i].load(Ordering::Relaxed) {
                     continue;
                 }
-                if pattern_matches(pattern, file) {
+                if pattern.matches(file) {
                     flags[i].store(true, Ordering::Relaxed);
                 }
             }
@@ -119,12 +123,12 @@ impl FileCache {
 
     /// Get files with no owners according to the given rules
     pub fn get_unowned_files(&self, rules: &[ParsedLine]) -> Vec<&String> {
-        // Extract patterns once
-        let patterns: Vec<&str> = rules
+        // Extract and compile patterns once
+        let compiled: Vec<CompiledPattern> = rules
             .iter()
             .filter_map(|rule| {
                 if let CodeownersLine::Rule { pattern, .. } = &rule.content {
-                    Some(pattern.as_str())
+                    Some(CompiledPattern::new(pattern))
                 } else {
                     None
                 }
@@ -134,11 +138,7 @@ impl FileCache {
         // Check files in parallel
         self.files
             .par_iter()
-            .filter(|file| {
-                !patterns
-                    .iter()
-                    .any(|pattern| pattern_matches(pattern, file))
-            })
+            .filter(|file| !compiled.iter().any(|pattern| pattern.matches(file)))
             .collect()
     }
 }
