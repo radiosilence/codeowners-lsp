@@ -6,6 +6,11 @@ Language server providing CODEOWNERS information via hover and inlay hints.
 
 - **Hover**: Shows file ownership when hovering over any code
 - **Inlay Hints**: Displays ownership at the top of each file
+- **Code Actions**: Take ownership of files directly from your editor
+  - Take ownership as individual (configured owner)
+  - Take ownership as team (configured owner)
+  - Take ownership as custom (manual entry)
+  - Add to existing CODEOWNERS entry or create new specific entry
 
 ## Installation
 
@@ -27,19 +32,24 @@ The LSP communicates over stdio.
 ## Configuration
 
 The LSP automatically finds CODEOWNERS files in standard locations:
+
 - `.github/CODEOWNERS`
 - `CODEOWNERS`
 - `docs/CODEOWNERS`
 
-### Custom Path
-
-Pass a custom path via initialization options:
+### Initialization Options
 
 ```json
 {
-  "path": "custom/CODEOWNERS"
+  "path": "custom/CODEOWNERS",
+  "individual": "@username",
+  "team": "@org/team-name"
 }
 ```
+
+- `path`: Custom CODEOWNERS file location (relative to workspace root)
+- `individual`: Your personal GitHub handle for "take ownership as individual" actions
+- `team`: Your team's GitHub handle for "take ownership as team" actions
 
 ## License
 
