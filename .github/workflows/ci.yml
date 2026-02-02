@@ -61,25 +61,25 @@ jobs:
       version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
 
-      - name: Check if version changed
+      - name: Check if version needs release
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "Current version: $CURRENT"
 
-          git show HEAD~1:Cargo.toml > /tmp/old.toml 2>/dev/null || echo 'version = "0.0.0"' > /tmp/old.toml
-          PREVIOUS=$(grep '^version' /tmp/old.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "Previous version: $PREVIOUS"
+          # Get latest release version from GitHub
+          RELEASED=$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null | sed 's/^v//' || echo "0.0.0")
+          echo "Latest released version: $RELEASED"
 
-          if [ "$CURRENT" != "$PREVIOUS" ]; then
-            echo "Version changed!"
+          if [ "$CURRENT" != "$RELEASED" ]; then
+            echo "New version to release!"
             echo "should_release=true" >> $GITHUB_OUTPUT
             echo "version=$CURRENT" >> $GITHUB_OUTPUT
           else
-            echo "Version unchanged"
+            echo "Version already released"
             echo "should_release=false" >> $GITHUB_OUTPUT
           fi
 
