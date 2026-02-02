@@ -7,11 +7,13 @@ use crate::parser::{parse_codeowners_file_with_positions, CodeownersLine};
 use crate::pattern::pattern_matches;
 
 /// Find a CODEOWNERS file starting from the given directory
+#[allow(dead_code)] // Used by CLI only
 pub fn find_codeowners(start: &Path) -> Option<PathBuf> {
     codeowners::locate(start)
 }
 
 /// Get the repository root from a CODEOWNERS file path
+#[allow(dead_code)] // Used by CLI only
 pub fn get_repo_root(codeowners_path: &Path, fallback: &Path) -> PathBuf {
     codeowners_path
         .parent()
@@ -31,6 +33,7 @@ pub fn get_repo_root(codeowners_path: &Path, fallback: &Path) -> PathBuf {
 pub struct OwnershipResult {
     pub line_number: u32,
     pub pattern: String,
+    #[allow(dead_code)] // Used by CLI only
     pub owners: Vec<String>,
 }
 
