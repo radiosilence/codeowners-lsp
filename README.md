@@ -88,6 +88,33 @@ The LSP finds CODEOWNERS in standard locations: `.github/CODEOWNERS`, `CODEOWNER
 | `github_token`    | GitHub token for owner validation. Use `env:VAR_NAME` to read from environment |
 | `validate_owners` | Enable GitHub API validation of @user and @org/team (default: false)           |
 
+## Feature Status
+
+| Feature                               | Status |
+| ------------------------------------- | ------ |
+| Hover (ownership info)                | ✅     |
+| Inlay hints (ownership)               | ✅     |
+| Go-to-definition                      | ✅     |
+| Take ownership actions                | ✅     |
+| Diagnostics (invalid patterns/owners) | ✅     |
+| Diagnostics (no matching files)       | ✅     |
+| Diagnostics (shadowed rules)          | ✅     |
+| Diagnostics (duplicate owners)        | ✅     |
+| Diagnostics (no owners)               | ✅     |
+| Coverage reporting                    | ✅     |
+| Path completions                      | ✅     |
+| Owner completions (GitHub API)        | ✅     |
+| GitHub owner validation               | ✅     |
+| CLI: lint                             | ✅     |
+| CLI: check                            | ✅     |
+| CLI: coverage                         | ✅     |
+| CLI: fmt                              | ✅     |
+| Code actions: remove shadowed         | ✅     |
+| Code actions: remove duplicate owners | ✅     |
+| Code actions: add owner               | ✅     |
+| Code actions: add catch-all           | ✅     |
+| Auto-fix lint issues                  | 🔜     |
+
 ## License
 
 MIT

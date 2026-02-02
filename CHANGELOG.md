@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.1] - 2026-02-02
+
+### Changed
+
+- **29x faster linting** via compiled patterns, fast-glob crate, and optimized algorithms (4.8s → 165ms on 3800-rule repos)
+
 ## [0.4.0] - 2026-02-02
 
 ### Added
@@ -11,7 +17,6 @@
 ### Changed
 
 - **Shadowed rules now show as warnings** instead of hints (visible in editors by default)
-- **29x faster linting** via compiled patterns, parallel matching, and optimized algorithms (4.8s → 165ms on 3800-rule repos)
 
 ### Fixed
 
