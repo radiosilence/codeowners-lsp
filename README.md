@@ -71,7 +71,38 @@ codeowners-lsp  # Communicates over stdio
 
 The LSP finds CODEOWNERS in standard locations: `.github/CODEOWNERS`, `CODEOWNERS`, `docs/CODEOWNERS`.
 
-### Initialization Options
+### Config File
+
+Create `.codeowners-lsp.toml` in your workspace root. For user-specific overrides (gitignore this), use `.codeowners-lsp.local.toml`.
+
+```toml
+# CODEOWNERS location (relative to workspace root)
+path = "custom/CODEOWNERS"
+
+# Your identifiers for "take ownership" actions
+individual = "@username"
+team = "@org/team-name"
+
+# GitHub validation (optional)
+github_token = "env:GITHUB_TOKEN"
+validate_owners = false
+
+# Diagnostic severity overrides
+# Values: "off", "hint", "info", "warning", "error"
+[diagnostics]
+invalid-pattern = "error"        # default: error
+invalid-owner = "error"          # default: error
+pattern-no-match = "warning"     # default: warning
+duplicate-owner = "warning"      # default: warning
+shadowed-rule = "warning"        # default: warning
+no-owners = "off"                # default: hint
+unowned-files = "info"           # default: info
+github-owner-not-found = "warning"  # default: warning
+```
+
+### LSP Initialization Options
+
+JSON settings can also be passed via LSP init options (these override TOML config):
 
 ```json
 {
@@ -79,7 +110,10 @@ The LSP finds CODEOWNERS in standard locations: `.github/CODEOWNERS`, `CODEOWNER
   "individual": "@username",
   "team": "@org/team-name",
   "github_token": "env:GITHUB_TOKEN",
-  "validate_owners": false
+  "validate_owners": false,
+  "diagnostics": {
+    "no-owners": "off"
+  }
 }
 ```
 
@@ -90,6 +124,7 @@ The LSP finds CODEOWNERS in standard locations: `.github/CODEOWNERS`, `CODEOWNER
 | `team`            | Your team's handle for "take ownership" actions                                |
 | `github_token`    | GitHub token for owner validation. Use `env:VAR_NAME` to read from environment |
 | `validate_owners` | Enable GitHub API validation of @user and @org/team (default: false)           |
+| `diagnostics`     | Map of diagnostic code to severity override                                    |
 
 ## Feature Status
 
@@ -120,6 +155,7 @@ The LSP finds CODEOWNERS in standard locations: `.github/CODEOWNERS`, `CODEOWNER
 | LSP: textDocument/formatting          | ✅     |
 | Hover: clickable GitHub links         | ✅     |
 | Code actions: fix all safe issues     | ✅     |
+| Configurable diagnostic severities    | ✅     |
 
 ## License
 

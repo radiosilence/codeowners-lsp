@@ -17,7 +17,7 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use diagnostics::compute_diagnostics_sync;
+use diagnostics::{compute_diagnostics_sync, DiagnosticConfig};
 use file_cache::FileCache;
 use github::GitHubClient;
 use ownership::{apply_safe_fixes, check_file_ownership};
@@ -40,6 +40,39 @@ struct Settings {
     /// Whether to validate owners against GitHub API
     #[serde(default)]
     validate_owners: bool,
+    /// Diagnostic severity overrides (code -> "off"|"hint"|"info"|"warning"|"error")
+    #[serde(default)]
+    diagnostics: HashMap<String, String>,
+}
+
+impl Settings {
+    /// Merge another Settings into this one (other takes precedence for set values)
+    fn merge(&mut self, other: Settings) {
+        if other.path.is_some() {
+            self.path = other.path;
+        }
+        if other.individual.is_some() {
+            self.individual = other.individual;
+        }
+        if other.team.is_some() {
+            self.team = other.team;
+        }
+        if other.github_token.is_some() {
+            self.github_token = other.github_token;
+        }
+        if other.validate_owners {
+            self.validate_owners = true;
+        }
+        // Merge diagnostics (other overwrites same keys)
+        for (k, v) in other.diagnostics {
+            self.diagnostics.insert(k, v);
+        }
+    }
+
+    /// Get DiagnosticConfig from settings
+    fn diagnostic_config(&self) -> DiagnosticConfig {
+        DiagnosticConfig::from_map(&self.diagnostics)
+    }
 }
 
 struct Backend {
@@ -52,6 +85,10 @@ struct Backend {
     github_client: GitHubClient,
 }
 
+/// Config file names
+const CONFIG_FILE: &str = ".codeowners-lsp.toml";
+const CONFIG_FILE_LOCAL: &str = ".codeowners-lsp.local.toml";
+
 impl Backend {
     fn new(client: Client) -> Self {
         Self {
@@ -63,6 +100,35 @@ impl Backend {
             file_cache: RwLock::new(None),
             github_client: GitHubClient::new(),
         }
+    }
+
+    /// Load settings from TOML config files in the workspace
+    /// Priority: defaults < .codeowners-lsp.toml < .codeowners-lsp.local.toml
+    fn load_config_files(&self) -> Settings {
+        let root = self.workspace_root.read().unwrap();
+        let Some(root) = root.as_ref() else {
+            return Settings::default();
+        };
+
+        let mut settings = Settings::default();
+
+        // Load project config
+        let config_path = root.join(CONFIG_FILE);
+        if let Ok(content) = fs::read_to_string(&config_path) {
+            if let Ok(file_settings) = toml::from_str::<Settings>(&content) {
+                settings.merge(file_settings);
+            }
+        }
+
+        // Load local config (user overrides)
+        let local_config_path = root.join(CONFIG_FILE_LOCAL);
+        if let Ok(content) = fs::read_to_string(&local_config_path) {
+            if let Ok(file_settings) = toml::from_str::<Settings>(&content) {
+                settings.merge(file_settings);
+            }
+        }
+
+        settings
     }
 
     /// Get the GitHub token from settings (resolving env: prefix)
@@ -135,18 +201,19 @@ impl Backend {
 
     /// Compute diagnostics for the CODEOWNERS file
     async fn compute_diagnostics(&self, content: &str) -> Vec<Diagnostic> {
-        // Check if GitHub validation is enabled
-        let (validate_owners, token) = {
+        // Check if GitHub validation is enabled and get diagnostic config
+        let (validate_owners, token, diag_config) = {
             let settings = self.settings.read().unwrap();
             let enabled = settings.validate_owners;
             let token = self.get_github_token();
-            (enabled && token.is_some(), token)
+            let config = settings.diagnostic_config();
+            (enabled && token.is_some(), token, config)
         };
 
         // Phase 1: Synchronous diagnostics (holds file_cache lock)
         let (mut diagnostics, owners_to_validate) = {
             let file_cache = self.file_cache.read().unwrap();
-            compute_diagnostics_sync(content, file_cache.as_ref())
+            compute_diagnostics_sync(content, file_cache.as_ref(), &diag_config)
         };
 
         // Phase 2: Async GitHub validation (no locks held)
@@ -157,6 +224,7 @@ impl Backend {
                     owners_to_validate,
                     &self.github_client,
                     &token,
+                    &diag_config,
                 )
                 .await;
             }
@@ -618,11 +686,14 @@ impl LanguageServer for Backend {
             }
         }
 
+        // Load config: TOML files first, then JSON init options override
+        let mut settings = self.load_config_files();
         if let Some(opts) = &params.initialization_options {
-            if let Ok(settings) = serde_json::from_value::<Settings>(opts.clone()) {
-                *self.settings.write().unwrap() = settings;
+            if let Ok(json_settings) = serde_json::from_value::<Settings>(opts.clone()) {
+                settings.merge(json_settings);
             }
         }
+        *self.settings.write().unwrap() = settings;
 
         self.load_codeowners();
         self.refresh_file_cache();
@@ -1008,11 +1079,14 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
-        if let Ok(settings) = serde_json::from_value::<Settings>(params.settings) {
-            *self.settings.write().unwrap() = settings;
-            self.load_codeowners();
-            self.refresh_file_cache();
+        // Reload from TOML files and merge with new JSON settings
+        let mut settings = self.load_config_files();
+        if let Ok(json_settings) = serde_json::from_value::<Settings>(params.settings) {
+            settings.merge(json_settings);
         }
+        *self.settings.write().unwrap() = settings;
+        self.load_codeowners();
+        self.refresh_file_cache();
     }
 
     async fn execute_command(

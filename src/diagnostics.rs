@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use tower_lsp::lsp_types::*;
 
@@ -20,6 +20,46 @@ pub mod codes {
     pub const GITHUB_OWNER_NOT_FOUND: &str = "github-owner-not-found";
 }
 
+/// Configuration for diagnostic severities
+/// None means the diagnostic is disabled ("off")
+#[derive(Debug, Clone, Default)]
+pub struct DiagnosticConfig {
+    severities: HashMap<String, Option<DiagnosticSeverity>>,
+}
+
+impl DiagnosticConfig {
+    /// Create config from a map of code -> severity string
+    /// Valid severities: "off", "hint", "info", "warning", "error"
+    pub fn from_map(map: &HashMap<String, String>) -> Self {
+        let mut severities = HashMap::new();
+        for (code, severity_str) in map {
+            severities.insert(code.clone(), parse_severity(severity_str));
+        }
+        Self { severities }
+    }
+
+    /// Get severity for a diagnostic code, returning the default if not configured
+    pub fn get(&self, code: &str, default: DiagnosticSeverity) -> Option<DiagnosticSeverity> {
+        match self.severities.get(code) {
+            Some(severity) => *severity, // None means "off"
+            None => Some(default),       // Not configured, use default
+        }
+    }
+}
+
+/// Parse a severity string into DiagnosticSeverity
+/// Returns None for "off" (disabled)
+fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
+    match s.to_lowercase().as_str() {
+        "off" | "none" | "disable" | "disabled" => None,
+        "hint" => Some(DiagnosticSeverity::HINT),
+        "info" | "information" => Some(DiagnosticSeverity::INFORMATION),
+        "warn" | "warning" => Some(DiagnosticSeverity::WARNING),
+        "error" => Some(DiagnosticSeverity::ERROR),
+        _ => Some(DiagnosticSeverity::WARNING), // Unknown defaults to warning
+    }
+}
+
 /// Owner validation info: (line_number, char_offset, owner_string, owner_len)
 pub type OwnerValidationInfo = (u32, u32, String, u32);
 
@@ -27,6 +67,7 @@ pub type OwnerValidationInfo = (u32, u32, String, u32);
 pub fn compute_diagnostics_sync(
     content: &str,
     file_cache: Option<&FileCache>,
+    config: &DiagnosticConfig,
 ) -> (Vec<Diagnostic>, Vec<OwnerValidationInfo>) {
     let mut diagnostics = Vec::new();
     let lines = parse_codeowners_file_with_positions(content);
@@ -48,23 +89,27 @@ pub fn compute_diagnostics_sync(
         if let CodeownersLine::Rule { pattern, owners } = &parsed_line.content {
             // Check pattern validity
             if let Some(error) = validate_pattern(pattern) {
-                diagnostics.push(Diagnostic {
-                    range: Range {
-                        start: Position {
-                            line: parsed_line.line_number,
-                            character: parsed_line.pattern_start,
+                if let Some(severity) =
+                    config.get(codes::INVALID_PATTERN, DiagnosticSeverity::ERROR)
+                {
+                    diagnostics.push(Diagnostic {
+                        range: Range {
+                            start: Position {
+                                line: parsed_line.line_number,
+                                character: parsed_line.pattern_start,
+                            },
+                            end: Position {
+                                line: parsed_line.line_number,
+                                character: parsed_line.pattern_end,
+                            },
                         },
-                        end: Position {
-                            line: parsed_line.line_number,
-                            character: parsed_line.pattern_end,
-                        },
-                    },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    code: Some(NumberOrString::String(codes::INVALID_PATTERN.to_string())),
-                    source: Some("codeowners".to_string()),
-                    message: error,
-                    ..Default::default()
-                });
+                        severity: Some(severity),
+                        code: Some(NumberOrString::String(codes::INVALID_PATTERN.to_string())),
+                        source: Some("codeowners".to_string()),
+                        message: error,
+                        ..Default::default()
+                    });
+                }
             } else if file_cache.is_some() {
                 // Only check valid patterns for file matches
                 patterns_to_check.push((
@@ -80,23 +125,27 @@ pub fn compute_diagnostics_sync(
                 let owner_offset = calculate_owner_offset(content, parsed_line, i, owner);
 
                 if let Some(error) = validate_owner(owner) {
-                    diagnostics.push(Diagnostic {
-                        range: Range {
-                            start: Position {
-                                line: parsed_line.line_number,
-                                character: owner_offset,
+                    if let Some(severity) =
+                        config.get(codes::INVALID_OWNER, DiagnosticSeverity::ERROR)
+                    {
+                        diagnostics.push(Diagnostic {
+                            range: Range {
+                                start: Position {
+                                    line: parsed_line.line_number,
+                                    character: owner_offset,
+                                },
+                                end: Position {
+                                    line: parsed_line.line_number,
+                                    character: owner_offset + owner.len() as u32,
+                                },
                             },
-                            end: Position {
-                                line: parsed_line.line_number,
-                                character: owner_offset + owner.len() as u32,
-                            },
-                        },
-                        severity: Some(DiagnosticSeverity::ERROR),
-                        code: Some(NumberOrString::String(codes::INVALID_OWNER.to_string())),
-                        source: Some("codeowners".to_string()),
-                        message: error,
-                        ..Default::default()
-                    });
+                            severity: Some(severity),
+                            code: Some(NumberOrString::String(codes::INVALID_OWNER.to_string())),
+                            source: Some("codeowners".to_string()),
+                            message: error,
+                            ..Default::default()
+                        });
+                    }
                 } else {
                     // Format valid, queue for GitHub validation
                     owners_to_validate.push((
@@ -112,23 +161,27 @@ pub fn compute_diagnostics_sync(
             let mut seen_owners: HashSet<&str> = HashSet::new();
             for owner in owners {
                 if !seen_owners.insert(owner.as_str()) {
-                    diagnostics.push(Diagnostic {
-                        range: Range {
-                            start: Position {
-                                line: parsed_line.line_number,
-                                character: parsed_line.owners_start,
+                    if let Some(severity) =
+                        config.get(codes::DUPLICATE_OWNER, DiagnosticSeverity::WARNING)
+                    {
+                        diagnostics.push(Diagnostic {
+                            range: Range {
+                                start: Position {
+                                    line: parsed_line.line_number,
+                                    character: parsed_line.owners_start,
+                                },
+                                end: Position {
+                                    line: parsed_line.line_number,
+                                    character: u32::MAX,
+                                },
                             },
-                            end: Position {
-                                line: parsed_line.line_number,
-                                character: u32::MAX,
-                            },
-                        },
-                        severity: Some(DiagnosticSeverity::WARNING),
-                        code: Some(NumberOrString::String(codes::DUPLICATE_OWNER.to_string())),
-                        source: Some("codeowners".to_string()),
-                        message: format!("Duplicate owner '{}' on this line", owner),
-                        ..Default::default()
-                    });
+                            severity: Some(severity),
+                            code: Some(NumberOrString::String(codes::DUPLICATE_OWNER.to_string())),
+                            source: Some("codeowners".to_string()),
+                            message: format!("Duplicate owner '{}' on this line", owner),
+                            ..Default::default()
+                        });
+                    }
                 }
             }
 
@@ -138,56 +191,64 @@ pub fn compute_diagnostics_sync(
             // Fast path: check for exact duplicates via HashMap
             let is_exact_duplicate = exact_patterns.contains_key(normalized_pattern);
             if let Some(&prev_line) = exact_patterns.get(normalized_pattern) {
-                diagnostics.push(Diagnostic {
-                    range: Range {
-                        start: Position {
-                            line: prev_line,
-                            character: 0,
+                if let Some(severity) =
+                    config.get(codes::SHADOWED_RULE, DiagnosticSeverity::WARNING)
+                {
+                    diagnostics.push(Diagnostic {
+                        range: Range {
+                            start: Position {
+                                line: prev_line,
+                                character: 0,
+                            },
+                            end: Position {
+                                line: prev_line,
+                                character: u32::MAX,
+                            },
                         },
-                        end: Position {
-                            line: prev_line,
-                            character: u32::MAX,
-                        },
-                    },
-                    severity: Some(DiagnosticSeverity::WARNING),
-                    code: Some(NumberOrString::String(codes::SHADOWED_RULE.to_string())),
-                    source: Some("codeowners".to_string()),
-                    message: format!(
-                        "This rule is shadowed by a later rule on line {} with the same pattern",
-                        parsed_line.line_number + 1
-                    ),
-                    tags: Some(vec![DiagnosticTag::UNNECESSARY]),
-                    ..Default::default()
-                });
+                        severity: Some(severity),
+                        code: Some(NumberOrString::String(codes::SHADOWED_RULE.to_string())),
+                        source: Some("codeowners".to_string()),
+                        message: format!(
+                            "This rule is shadowed by a later rule on line {} with the same pattern",
+                            parsed_line.line_number + 1
+                        ),
+                        tags: Some(vec![DiagnosticTag::UNNECESSARY]),
+                        ..Default::default()
+                    });
+                }
             }
 
             // Only check subsumption against patterns that could subsume (wildcards, dirs)
             // Skip if already found as exact duplicate to avoid double-reporting
             if !is_exact_duplicate {
-                for (prev_pattern, prev_line) in &subsume_patterns {
-                    if pattern_subsumes(prev_pattern, pattern) {
-                        diagnostics.push(Diagnostic {
-                            range: Range {
-                                start: Position {
-                                    line: *prev_line,
-                                    character: 0,
+                if let Some(severity) =
+                    config.get(codes::SHADOWED_RULE, DiagnosticSeverity::WARNING)
+                {
+                    for (prev_pattern, prev_line) in &subsume_patterns {
+                        if pattern_subsumes(prev_pattern, pattern) {
+                            diagnostics.push(Diagnostic {
+                                range: Range {
+                                    start: Position {
+                                        line: *prev_line,
+                                        character: 0,
+                                    },
+                                    end: Position {
+                                        line: *prev_line,
+                                        character: u32::MAX,
+                                    },
                                 },
-                                end: Position {
-                                    line: *prev_line,
-                                    character: u32::MAX,
-                                },
-                            },
-                            severity: Some(DiagnosticSeverity::WARNING),
-                            code: Some(NumberOrString::String(codes::SHADOWED_RULE.to_string())),
-                            source: Some("codeowners".to_string()),
-                            message: format!(
-                                "This rule is shadowed by a more general pattern '{}' on line {}",
-                                pattern,
-                                parsed_line.line_number + 1
-                            ),
-                            tags: Some(vec![DiagnosticTag::UNNECESSARY]),
-                            ..Default::default()
-                        });
+                                severity: Some(severity),
+                                code: Some(NumberOrString::String(codes::SHADOWED_RULE.to_string())),
+                                source: Some("codeowners".to_string()),
+                                message: format!(
+                                    "This rule is shadowed by a more general pattern '{}' on line {}",
+                                    pattern,
+                                    parsed_line.line_number + 1
+                                ),
+                                tags: Some(vec![DiagnosticTag::UNNECESSARY]),
+                                ..Default::default()
+                            });
+                        }
                     }
                 }
             }
@@ -203,94 +264,100 @@ pub fn compute_diagnostics_sync(
             // Check for rules without owners
             if owners.is_empty() {
                 // This is often intentional (opt-out of ownership), so just a hint
-                diagnostics.push(Diagnostic {
-                    range: Range {
-                        start: Position {
-                            line: parsed_line.line_number,
-                            character: parsed_line.pattern_start,
+                if let Some(severity) = config.get(codes::NO_OWNERS, DiagnosticSeverity::HINT) {
+                    diagnostics.push(Diagnostic {
+                        range: Range {
+                            start: Position {
+                                line: parsed_line.line_number,
+                                character: parsed_line.pattern_start,
+                            },
+                            end: Position {
+                                line: parsed_line.line_number,
+                                character: parsed_line.pattern_end,
+                            },
                         },
-                        end: Position {
-                            line: parsed_line.line_number,
-                            character: parsed_line.pattern_end,
-                        },
-                    },
-                    severity: Some(DiagnosticSeverity::HINT),
-                    code: Some(NumberOrString::String(codes::NO_OWNERS.to_string())),
-                    source: Some("codeowners".to_string()),
-                    message: "No owners specified (files will have no code owners)".to_string(),
-                    ..Default::default()
-                });
+                        severity: Some(severity),
+                        code: Some(NumberOrString::String(codes::NO_OWNERS.to_string())),
+                        source: Some("codeowners".to_string()),
+                        message: "No owners specified (files will have no code owners)".to_string(),
+                        ..Default::default()
+                    });
+                }
             }
         }
     }
 
     // Batch check for patterns with no matching files
     if let Some(cache) = file_cache {
-        let patterns: Vec<&str> = patterns_to_check.iter().map(|(p, _, _, _)| *p).collect();
-        let matched = cache.find_patterns_with_matches(&patterns);
+        if let Some(severity) = config.get(codes::PATTERN_NO_MATCH, DiagnosticSeverity::WARNING) {
+            let patterns: Vec<&str> = patterns_to_check.iter().map(|(p, _, _, _)| *p).collect();
+            let matched = cache.find_patterns_with_matches(&patterns);
 
-        for (i, (_, line_number, pattern_start, pattern_end)) in
-            patterns_to_check.iter().enumerate()
-        {
-            if !matched.contains(&i) {
-                diagnostics.push(Diagnostic {
-                    range: Range {
-                        start: Position {
-                            line: *line_number,
-                            character: *pattern_start,
+            for (i, (_, line_number, pattern_start, pattern_end)) in
+                patterns_to_check.iter().enumerate()
+            {
+                if !matched.contains(&i) {
+                    diagnostics.push(Diagnostic {
+                        range: Range {
+                            start: Position {
+                                line: *line_number,
+                                character: *pattern_start,
+                            },
+                            end: Position {
+                                line: *line_number,
+                                character: *pattern_end,
+                            },
                         },
-                        end: Position {
-                            line: *line_number,
-                            character: *pattern_end,
-                        },
-                    },
-                    severity: Some(DiagnosticSeverity::WARNING),
-                    code: Some(NumberOrString::String(codes::PATTERN_NO_MATCH.to_string())),
-                    source: Some("codeowners".to_string()),
-                    message: "Pattern matches no files in the repository".to_string(),
-                    ..Default::default()
-                });
+                        severity: Some(severity),
+                        code: Some(NumberOrString::String(codes::PATTERN_NO_MATCH.to_string())),
+                        source: Some("codeowners".to_string()),
+                        message: "Pattern matches no files in the repository".to_string(),
+                        ..Default::default()
+                    });
+                }
             }
         }
     }
 
     // Check for unowned files (coverage)
     if let Some(cache) = file_cache {
-        let unowned = cache.get_unowned_files(&lines);
-        if !unowned.is_empty() {
-            let last_line = content.lines().count().saturating_sub(1) as u32;
-            let sample_files: Vec<&str> = unowned.iter().take(5).map(|s| s.as_str()).collect();
-            let message = if unowned.len() > 5 {
-                format!(
-                    "{} files have no code owners (e.g., {})",
-                    unowned.len(),
-                    sample_files.join(", ")
-                )
-            } else {
-                format!(
-                    "{} files have no code owners: {}",
-                    unowned.len(),
-                    sample_files.join(", ")
-                )
-            };
+        if let Some(severity) = config.get(codes::UNOWNED_FILES, DiagnosticSeverity::INFORMATION) {
+            let unowned = cache.get_unowned_files(&lines);
+            if !unowned.is_empty() {
+                let last_line = content.lines().count().saturating_sub(1) as u32;
+                let sample_files: Vec<&str> = unowned.iter().take(5).map(|s| s.as_str()).collect();
+                let message = if unowned.len() > 5 {
+                    format!(
+                        "{} files have no code owners (e.g., {})",
+                        unowned.len(),
+                        sample_files.join(", ")
+                    )
+                } else {
+                    format!(
+                        "{} files have no code owners: {}",
+                        unowned.len(),
+                        sample_files.join(", ")
+                    )
+                };
 
-            diagnostics.push(Diagnostic {
-                range: Range {
-                    start: Position {
-                        line: last_line,
-                        character: 0,
+                diagnostics.push(Diagnostic {
+                    range: Range {
+                        start: Position {
+                            line: last_line,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: last_line,
+                            character: 0,
+                        },
                     },
-                    end: Position {
-                        line: last_line,
-                        character: 0,
-                    },
-                },
-                severity: Some(DiagnosticSeverity::INFORMATION),
-                code: Some(NumberOrString::String(codes::UNOWNED_FILES.to_string())),
-                source: Some("codeowners".to_string()),
-                message,
-                ..Default::default()
-            });
+                    severity: Some(severity),
+                    code: Some(NumberOrString::String(codes::UNOWNED_FILES.to_string())),
+                    source: Some("codeowners".to_string()),
+                    message,
+                    ..Default::default()
+                });
+            }
         }
     }
 
@@ -303,7 +370,13 @@ pub async fn add_github_diagnostics(
     owners_to_validate: Vec<OwnerValidationInfo>,
     github_client: &GitHubClient,
     token: &str,
+    config: &DiagnosticConfig,
 ) {
+    let Some(severity) = config.get(codes::GITHUB_OWNER_NOT_FOUND, DiagnosticSeverity::WARNING)
+    else {
+        return; // Disabled
+    };
+
     for (line_number, owner_offset, owner, owner_len) in owners_to_validate {
         if let Some(false) = github_client.validate_owner(&owner, token).await {
             diagnostics.push(Diagnostic {
@@ -317,7 +390,7 @@ pub async fn add_github_diagnostics(
                         character: owner_offset + owner_len,
                     },
                 },
-                severity: Some(DiagnosticSeverity::WARNING),
+                severity: Some(severity),
                 code: Some(NumberOrString::String(
                     codes::GITHUB_OWNER_NOT_FOUND.to_string(),
                 )),
@@ -351,10 +424,14 @@ fn calculate_owner_offset(
 mod tests {
     use super::*;
 
+    fn default_config() -> DiagnosticConfig {
+        DiagnosticConfig::default()
+    }
+
     #[test]
     fn test_invalid_pattern_diagnostic() {
         let content = "[invalid @owner";
-        let (diagnostics, _) = compute_diagnostics_sync(content, None);
+        let (diagnostics, _) = compute_diagnostics_sync(content, None, &default_config());
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].severity, Some(DiagnosticSeverity::ERROR));
@@ -364,7 +441,7 @@ mod tests {
     #[test]
     fn test_invalid_owner_diagnostic() {
         let content = "*.rs invalid-owner";
-        let (diagnostics, _) = compute_diagnostics_sync(content, None);
+        let (diagnostics, _) = compute_diagnostics_sync(content, None, &default_config());
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].severity, Some(DiagnosticSeverity::ERROR));
@@ -374,7 +451,7 @@ mod tests {
     #[test]
     fn test_duplicate_owner_diagnostic() {
         let content = "*.rs @owner @owner";
-        let (diagnostics, _) = compute_diagnostics_sync(content, None);
+        let (diagnostics, _) = compute_diagnostics_sync(content, None, &default_config());
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].severity, Some(DiagnosticSeverity::WARNING));
@@ -384,7 +461,7 @@ mod tests {
     #[test]
     fn test_shadowed_rule_diagnostic() {
         let content = "*.rs @owner1\n*.rs @owner2";
-        let (diagnostics, _) = compute_diagnostics_sync(content, None);
+        let (diagnostics, _) = compute_diagnostics_sync(content, None, &default_config());
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].severity, Some(DiagnosticSeverity::WARNING));
@@ -395,7 +472,7 @@ mod tests {
     #[test]
     fn test_no_owners_diagnostic() {
         let content = "*.rs";
-        let (diagnostics, _) = compute_diagnostics_sync(content, None);
+        let (diagnostics, _) = compute_diagnostics_sync(content, None, &default_config());
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].severity, Some(DiagnosticSeverity::HINT));
@@ -405,7 +482,7 @@ mod tests {
     #[test]
     fn test_valid_content_no_diagnostics() {
         let content = "# Comment\n*.rs @owner\n/src/ @team/name";
-        let (diagnostics, owners) = compute_diagnostics_sync(content, None);
+        let (diagnostics, owners) = compute_diagnostics_sync(content, None, &default_config());
 
         assert!(diagnostics.is_empty());
         assert_eq!(owners.len(), 2); // Two valid owners queued for GitHub validation
@@ -414,12 +491,37 @@ mod tests {
     #[test]
     fn test_owners_to_validate_collected() {
         let content = "*.rs @user @org/team email@test.com";
-        let (_, owners) = compute_diagnostics_sync(content, None);
+        let (_, owners) = compute_diagnostics_sync(content, None, &default_config());
 
         // All three owners should be queued
         assert_eq!(owners.len(), 3);
         assert_eq!(owners[0].2, "@user");
         assert_eq!(owners[1].2, "@org/team");
         assert_eq!(owners[2].2, "email@test.com");
+    }
+
+    #[test]
+    fn test_severity_override() {
+        let content = "*.rs";
+        let mut map = HashMap::new();
+        map.insert("no-owners".to_string(), "error".to_string());
+        let config = DiagnosticConfig::from_map(&map);
+
+        let (diagnostics, _) = compute_diagnostics_sync(content, None, &config);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, Some(DiagnosticSeverity::ERROR));
+    }
+
+    #[test]
+    fn test_severity_off() {
+        let content = "*.rs";
+        let mut map = HashMap::new();
+        map.insert("no-owners".to_string(), "off".to_string());
+        let config = DiagnosticConfig::from_map(&map);
+
+        let (diagnostics, _) = compute_diagnostics_sync(content, None, &config);
+
+        assert!(diagnostics.is_empty());
     }
 }

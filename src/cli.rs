@@ -79,7 +79,9 @@ fn lint(path: Option<&str>, json_output: bool) -> ExitCode {
 
     let repo_root = get_repo_root(&codeowners_path, &cwd);
     let file_cache = FileCache::new(&repo_root);
-    let (diagnostics, _) = diagnostics::compute_diagnostics_sync(&content, Some(&file_cache));
+    let diag_config = diagnostics::DiagnosticConfig::default();
+    let (diagnostics, _) =
+        diagnostics::compute_diagnostics_sync(&content, Some(&file_cache), &diag_config);
 
     if json_output {
         let json = serde_json::json!({

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.0] - 2026-02-02
+
+### Added
+
+- **Config file support** - `.codeowners-lsp.toml` for project settings, `.codeowners-lsp.local.toml` for user overrides
+- **Configurable diagnostic severities** - disable or change severity of any diagnostic rule via `[diagnostics]` section
+  - Supports: `off`, `hint`, `info`, `warning`, `error`
+  - Example: `no-owners = "off"` to disable the no-owners hint
+
 ## [0.4.3] - 2026-02-02
 
 ### Added
