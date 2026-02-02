@@ -19,6 +19,8 @@ pub mod codes {
     pub const UNOWNED_FILES: &str = "unowned-files";
     #[allow(dead_code)] // Used by LSP only
     pub const GITHUB_OWNER_NOT_FOUND: &str = "github-owner-not-found";
+    #[allow(dead_code)] // Used by LSP only
+    pub const FILE_NOT_OWNED: &str = "file-not-owned";
 }
 
 /// Configuration for diagnostic severities

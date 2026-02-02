@@ -244,6 +244,70 @@ impl Backend {
         false
     }
 
+    /// Check if a file is owned and publish diagnostic if not
+    /// Returns diagnostics for an unowned file (full file error)
+    fn check_file_not_owned(&self, uri: &Url, line_count: u32) -> Vec<Diagnostic> {
+        // Skip CODEOWNERS file itself
+        if self.is_codeowners_file(uri) {
+            return Vec::new();
+        }
+
+        // Check if this diagnostic is enabled
+        let config = {
+            let settings = self.settings.read().unwrap();
+            settings.diagnostic_config()
+        };
+
+        let Some(severity) = config.get(
+            diagnostics::codes::FILE_NOT_OWNED,
+            DiagnosticSeverity::ERROR,
+        ) else {
+            return Vec::new(); // Disabled
+        };
+
+        // Check if file has owners
+        if self.get_owners_for_file(uri).is_some() {
+            return Vec::new(); // Has owners, no diagnostic
+        }
+
+        // Get relative path for message
+        let relative_path = {
+            let root = self.workspace_root.read().unwrap();
+            if let Some(root) = root.as_ref() {
+                uri.to_file_path().ok().and_then(|p| {
+                    p.strip_prefix(root)
+                        .ok()
+                        .map(|r| r.to_string_lossy().to_string())
+                })
+            } else {
+                None
+            }
+        };
+
+        let path_display = relative_path.unwrap_or_else(|| uri.path().to_string());
+
+        // Full file diagnostic
+        vec![Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: line_count.saturating_sub(1),
+                    character: u32::MAX, // End of last line
+                },
+            },
+            severity: Some(severity),
+            code: Some(NumberOrString::String(
+                diagnostics::codes::FILE_NOT_OWNED.to_string(),
+            )),
+            source: Some("codeowners".to_string()),
+            message: format!("File '{}' has no CODEOWNERS entry", path_display),
+            ..Default::default()
+        }]
+    }
+
     /// Generate code actions for CODEOWNERS file diagnostics
     async fn codeowners_code_actions(
         &self,
@@ -754,6 +818,15 @@ impl LanguageServer for Backend {
             self.client
                 .publish_diagnostics(uri.clone(), diagnostics, None)
                 .await;
+        } else {
+            // Check if file has no CODEOWNERS entry
+            let line_count = params.text_document.text.lines().count() as u32;
+            let diagnostics = self.check_file_not_owned(uri, line_count);
+            if !diagnostics.is_empty() {
+                self.client
+                    .publish_diagnostics(uri.clone(), diagnostics, None)
+                    .await;
+            }
         }
     }
 
@@ -767,6 +840,7 @@ impl LanguageServer for Backend {
                     .await;
             }
         }
+        // Note: We don't re-check file-not-owned on change since the file path doesn't change
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
