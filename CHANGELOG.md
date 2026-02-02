@@ -1,9 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.0] - 2026-02-02
 
 ### Added
 
+- **`codeowners-cli`** standalone CLI binary:
+  - `lint [path]` - Check CODEOWNERS for issues (`--json` for CI)
+  - `check <file>` - Show which rule owns a specific file
+  - `coverage` - Show files without owners and coverage percentage
+- **Pattern subsumption detection** - detects when rules are shadowed by more general patterns (e.g., `*.rs` shadowed by `*`)
 - **Diagnostics** for CODEOWNERS file:
   - Invalid glob pattern syntax (error)
   - Invalid owner format (error)

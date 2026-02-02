@@ -1,8 +1,22 @@
 # codeowners-lsp
 
-Language server for CODEOWNERS files with diagnostics, navigation, and code actions.
+Language server for CODEOWNERS files with diagnostics, navigation, and code actions. Also includes a standalone CLI for linting.
 
-## Features
+## CLI
+
+```bash
+# Lint CODEOWNERS (auto-detects location)
+codeowners-cli lint
+codeowners-cli lint --json  # Machine-readable output for CI
+
+# Check who owns a file
+codeowners-cli check src/main.rs
+
+# Show coverage stats
+codeowners-cli coverage
+```
+
+## LSP Features
 
 ### In Any File
 
