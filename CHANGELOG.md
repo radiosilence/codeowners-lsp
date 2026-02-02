@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.2] - 2026-02-02
+
+### Fixed
+
+- Use rustls instead of OpenSSL for cross-platform builds
+
 ## [0.3.1] - 2026-02-02
 
 ### Fixed
