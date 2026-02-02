@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.9.0] - 2026-02-02
+
+### Added
+
+- **`suggest` command** - Suggests owners for unowned files based on git commit history
+  - Analyzes `git shortlog` to find who commits most to files/directories
+  - Converts GitHub emails to @username format automatically
+  - Confidence scoring based on commit frequency and volume
+  - Multiple output formats: `--format human|codeowners|json`
+  - Configurable confidence threshold: `--min-confidence 30`
+
+- **`optimize` command** - Suggests ways to simplify CODEOWNERS patterns
+  - Detects multiple file rules that could be a single directory pattern
+  - Finds patterns with same extension in same directory → glob pattern
+  - Identifies redundant/shadowed rules for removal
+  - Multiple output formats: `--format human|codeowners|json`
+
+- **Git blame analysis module** (`src/blame.rs`)
+  - Analyzes git history per-file and per-directory
+  - Aggregates contributor statistics with commit counts
+  - Smart owner format conversion (GitHub noreply emails → @username)
+
+### Example Usage
+
+```bash
+# Suggest owners for unowned files
+codeowners-cli suggest
+codeowners-cli suggest --min-confidence 50 --format codeowners
+
+# Find optimization opportunities
+codeowners-cli optimize
+codeowners-cli optimize --format json --min-files 5
+```
+
 ## [0.8.0] - 2026-02-02
 
 ### Added

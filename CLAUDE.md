@@ -26,6 +26,10 @@ src/
 │   ├── selection.rs # selection_range
 │   └── linked.rs    # linked_editing_range
 ├── commands/        # CLI-only commands
+│   ├── suggest.rs   # suggest owners from git history
+│   ├── optimize.rs  # consolidate patterns
+│   └── ...          # lint, fmt, fix, check, coverage, tree, config
+├── blame.rs         # Shared: git blame/shortlog analysis
 ├── parser.rs        # Shared: CODEOWNERS parsing
 ├── pattern.rs       # Shared: glob matching
 ├── diagnostics.rs   # Shared: validation logic

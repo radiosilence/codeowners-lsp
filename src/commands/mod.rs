@@ -4,6 +4,8 @@ mod coverage;
 mod fix;
 mod fmt;
 mod lint;
+mod optimize;
+mod suggest;
 mod tree;
 mod validate_owners;
 
@@ -13,5 +15,7 @@ pub use coverage::coverage;
 pub use fix::fix;
 pub use fmt::fmt;
 pub use lint::lint;
+pub use optimize::{optimize, OptimizeOptions, OutputFormat as OptimizeFormat};
+pub use suggest::{suggest, OutputFormat as SuggestFormat, SuggestOptions};
 pub use tree::tree;
 pub use validate_owners::validate_owners;

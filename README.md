@@ -15,6 +15,17 @@ codeowners-cli check src/main.rs
 # Show coverage stats
 codeowners-cli coverage
 
+# Suggest owners for unowned files (based on git history)
+codeowners-cli suggest                          # Human-readable suggestions
+codeowners-cli suggest --format codeowners      # Ready-to-paste CODEOWNERS lines
+codeowners-cli suggest --min-confidence 50      # Higher confidence threshold
+
+# Optimize CODEOWNERS patterns
+codeowners-cli optimize                         # Preview consolidation opportunities
+codeowners-cli optimize --write                 # Apply optimizations to file
+codeowners-cli optimize --json                  # JSON output for CI
+codeowners-cli optimize --min-files 5           # Require 5+ files for dir consolidation
+
 # Format CODEOWNERS file
 codeowners-cli fmt                    # Prints formatted output
 codeowners-cli fmt --write            # Writes in place
@@ -31,7 +42,7 @@ codeowners-cli validate-owners --token ghp_xxx
 codeowners-cli tree
 
 # Generate shell completions
-codeowners-cli completions zsh       # zsh, zsh, fish, powershell, elvish
+codeowners-cli completions zsh       # zsh, bash, fish, powershell, elvish
 ```
 
 ## LSP Features
@@ -205,6 +216,8 @@ JSON settings can also be passed via LSP init options (these override TOML confi
 | Linked editing (multi-cursor owners)  | ✅     |
 | Pattern hover (show matches)          | ✅     |
 | Related diagnostics (shadowed links)  | ✅     |
+| CLI: suggest (git-based suggestions)  | ✅     |
+| CLI: optimize (pattern consolidation) | ✅     |
 
 ## License
 
