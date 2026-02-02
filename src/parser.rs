@@ -115,12 +115,148 @@ pub fn serialize_codeowners(lines: &[CodeownersLine]) -> String {
         .join("\n")
 }
 
-/// Find the best insertion point for a new pattern (maintains specificity order)
+/// Find the best insertion point for a new pattern
+/// Uses heuristics to find a sensible location:
+/// 1. Path similarity: near rules with similar directory prefixes
+/// 2. Before catch-all rules (*, /**)
+/// 3. End of file as fallback
 #[allow(dead_code)]
-pub fn find_insertion_point(lines: &[CodeownersLine], _pattern: &str) -> usize {
-    // CODEOWNERS rules are matched last-match-wins, so more specific patterns
-    // should come later in the file. We'll insert at the end by default.
+pub fn find_insertion_point(lines: &[CodeownersLine], pattern: &str) -> usize {
+    find_insertion_point_with_owner(lines, pattern, None)
+}
+
+/// Find the best insertion point considering both path and owner
+#[allow(dead_code)]
+pub fn find_insertion_point_with_owner(
+    lines: &[CodeownersLine],
+    pattern: &str,
+    owner: Option<&str>,
+) -> usize {
+    if lines.is_empty() {
+        return 0;
+    }
+
+    // Extract directory prefix from the pattern (e.g., "/src/foo/bar.rs" -> "/src/foo")
+    let pattern_dir = get_directory_prefix(pattern);
+
+    // Track best match by path similarity
+    let mut best_path_match: Option<(usize, usize)> = None; // (index, depth)
+
+    // Track owner clusters
+    let mut owner_lines: Vec<usize> = Vec::new();
+
+    // Track catch-all position
+    let mut catch_all_idx: Option<usize> = None;
+
+    for (idx, line) in lines.iter().enumerate() {
+        if let CodeownersLine::Rule {
+            pattern: rule_pattern,
+            owners,
+        } = line
+        {
+            // Check for catch-all patterns
+            if rule_pattern == "*" || rule_pattern == "/*" || rule_pattern == "/**" {
+                if catch_all_idx.is_none() {
+                    catch_all_idx = Some(idx);
+                }
+                continue;
+            }
+
+            // Check path similarity
+            let rule_dir = get_directory_prefix(rule_pattern);
+            let common_depth = common_prefix_depth(&pattern_dir, &rule_dir);
+
+            if common_depth > 0 {
+                if let Some((_, best_depth)) = best_path_match {
+                    if common_depth > best_depth {
+                        best_path_match = Some((idx, common_depth));
+                    }
+                } else {
+                    best_path_match = Some((idx, common_depth));
+                }
+            }
+
+            // Track owner occurrences
+            if let Some(target_owner) = owner {
+                if owners.iter().any(|o| o == target_owner) {
+                    owner_lines.push(idx);
+                }
+            }
+        }
+    }
+
+    // Priority 1: Insert after the best path match (similar directory)
+    if let Some((idx, _)) = best_path_match {
+        // Insert after the matched rule
+        return idx + 1;
+    }
+
+    // Priority 2: Insert near owner cluster (after last occurrence)
+    if let Some(&last_owner_idx) = owner_lines.last() {
+        return last_owner_idx + 1;
+    }
+
+    // Priority 3: Insert before catch-all rules
+    if let Some(idx) = catch_all_idx {
+        return idx;
+    }
+
+    // Fallback: end of file
     lines.len()
+}
+
+/// Extract directory prefix from a pattern
+/// "/src/foo/bar.rs" -> "/src/foo"
+/// "/src/**/*.rs" -> "/src"
+/// "*.js" -> ""
+fn get_directory_prefix(pattern: &str) -> String {
+    // Remove leading / for comparison
+    let p = pattern.strip_prefix('/').unwrap_or(pattern);
+
+    // Find the last path separator before any wildcard
+    let mut last_slash = None;
+    for (i, c) in p.char_indices() {
+        if c == '*' || c == '?' || c == '[' {
+            break;
+        }
+        if c == '/' {
+            last_slash = Some(i);
+        }
+    }
+
+    match last_slash {
+        Some(idx) => format!("/{}", &p[..idx]),
+        None => {
+            // Check if it's a full path to a file (contains /)
+            if let Some(idx) = p.rfind('/') {
+                format!("/{}", &p[..idx])
+            } else {
+                String::new()
+            }
+        }
+    }
+}
+
+/// Count common directory depth between two paths
+/// "/src/foo" and "/src/foo/bar" -> 2 (src, foo)
+/// "/src/foo" and "/lib/bar" -> 0
+fn common_prefix_depth(a: &str, b: &str) -> usize {
+    if a.is_empty() || b.is_empty() {
+        return 0;
+    }
+
+    let a_parts: Vec<&str> = a.split('/').filter(|s| !s.is_empty()).collect();
+    let b_parts: Vec<&str> = b.split('/').filter(|s| !s.is_empty()).collect();
+
+    let mut depth = 0;
+    for (ap, bp) in a_parts.iter().zip(b_parts.iter()) {
+        if ap == bp {
+            depth += 1;
+        } else {
+            break;
+        }
+    }
+    depth
 }
 
 /// Format a CODEOWNERS file: normalize rule spacing, preserve comments exactly
@@ -268,5 +404,59 @@ mod tests {
         }];
         let serialized = serialize_codeowners(&lines);
         assert_eq!(serialized, "/path/ ");
+    }
+
+    #[test]
+    fn test_insertion_point_path_similarity() {
+        let lines = parse_codeowners_file(
+            "/src/api/ @api-team\n/src/api/auth/ @auth-team\n/lib/ @lib-team",
+        );
+        // New file in /src/api should go after first best path match (/src/api/)
+        let idx = find_insertion_point_with_owner(&lines, "/src/api/users.rs", None);
+        assert_eq!(idx, 1); // After /src/api/
+    }
+
+    #[test]
+    fn test_insertion_point_before_catch_all() {
+        let lines = parse_codeowners_file("/src/ @team\n* @default");
+        // New pattern should go before catch-all
+        let idx = find_insertion_point_with_owner(&lines, "/lib/foo.rs", None);
+        assert_eq!(idx, 1); // Before *
+    }
+
+    #[test]
+    fn test_insertion_point_owner_cluster() {
+        let lines =
+            parse_codeowners_file("/src/ @alice\n/lib/ @bob\n/tests/ @alice\n/docs/ @carol");
+        // When owner is specified, prefer inserting near their other rules
+        let idx = find_insertion_point_with_owner(&lines, "/bin/tool.rs", Some("@alice"));
+        assert_eq!(idx, 3); // After /tests/ @alice
+    }
+
+    #[test]
+    fn test_insertion_point_empty() {
+        let lines: Vec<CodeownersLine> = vec![];
+        let idx = find_insertion_point_with_owner(&lines, "/foo/bar.rs", None);
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn test_get_directory_prefix() {
+        assert_eq!(get_directory_prefix("/src/foo/bar.rs"), "/src/foo");
+        assert_eq!(get_directory_prefix("/src/**/*.rs"), "/src");
+        assert_eq!(get_directory_prefix("*.js"), "");
+        assert_eq!(get_directory_prefix("/single.rs"), "");
+        assert_eq!(get_directory_prefix("/a/b/c/d.txt"), "/a/b/c");
+        // Directory patterns (trailing slash)
+        assert_eq!(get_directory_prefix("/src/api/"), "/src/api");
+        assert_eq!(get_directory_prefix("/src/api/auth/"), "/src/api/auth");
+    }
+
+    #[test]
+    fn test_common_prefix_depth() {
+        assert_eq!(common_prefix_depth("/src/foo", "/src/foo/bar"), 2);
+        assert_eq!(common_prefix_depth("/src/foo", "/src/bar"), 1);
+        assert_eq!(common_prefix_depth("/src/foo", "/lib/bar"), 0);
+        assert_eq!(common_prefix_depth("", "/src"), 0);
     }
 }

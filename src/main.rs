@@ -22,7 +22,7 @@ use file_cache::FileCache;
 use github::GitHubClient;
 use ownership::{apply_safe_fixes, check_file_ownership};
 use parser::{
-    find_insertion_point, format_codeowners, parse_codeowners_file,
+    find_insertion_point_with_owner, format_codeowners, parse_codeowners_file,
     parse_codeowners_file_with_positions, serialize_codeowners, CodeownersLine,
 };
 use pattern::pattern_matches;
@@ -651,7 +651,7 @@ impl Backend {
             fs::read_to_string(&path).map_err(|e| format!("Failed to read CODEOWNERS: {}", e))?;
 
         let mut lines = parse_codeowners_file(&content);
-        let insertion_point = find_insertion_point(&lines, pattern);
+        let insertion_point = find_insertion_point_with_owner(&lines, pattern, Some(owner));
 
         lines.insert(
             insertion_point,
