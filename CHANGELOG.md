@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.3] - 2026-02-02
+
+### Fixed
+
+- **No CODEOWNERS = no complaints** - file-not-owned diagnostics only shown when CODEOWNERS file actually exists
+
 ## [0.6.2] - 2026-02-02
 
 ### Fixed

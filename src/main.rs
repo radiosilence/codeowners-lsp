@@ -456,6 +456,11 @@ impl Backend {
     /// Check if a file is owned and publish diagnostic if not
     /// Returns diagnostics for an unowned file (full file error)
     fn check_file_not_owned(&self, uri: &Url, line_count: u32) -> Vec<Diagnostic> {
+        // If no CODEOWNERS file exists, don't complain about ownership
+        if self.codeowners_path.read().unwrap().is_none() {
+            return Vec::new();
+        }
+
         // Skip CODEOWNERS file itself
         if self.is_codeowners_file(uri) {
             return Vec::new();
