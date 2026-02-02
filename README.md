@@ -15,9 +15,10 @@ codeowners-cli check src/main.rs
 # Show coverage stats
 codeowners-cli coverage
 
-# Suggest owners for unowned files (based on git history)
-# NOTE: Experimental - suggestions based on commit frequency, review before using
-codeowners-cli suggest                          # Human-readable suggestions
+# Suggest owners for unowned files (requires lookup_cmd config)
+# NOTE: Experimental - requires lookup_cmd to resolve emails to teams
+codeowners-cli suggest                          # Preview suggestions
+codeowners-cli suggest --write                  # Add suggestions to CODEOWNERS
 codeowners-cli suggest --format codeowners      # Ready-to-paste CODEOWNERS lines
 codeowners-cli suggest --min-confidence 50      # Higher confidence threshold
 
@@ -128,6 +129,10 @@ team = "@org/team-name"
 github_token = "env:GITHUB_TOKEN"
 validate_owners = false
 
+# Lookup command for `suggest` - resolves git emails to team names (experimental)
+# Use {email} as placeholder, output is fuzzy-matched against existing CODEOWNERS owners
+# lookup_cmd = "your-tool lookup {email} --json | jq -r .team"
+
 # Diagnostic severity overrides
 # Values: "off", "hint", "info", "warning", "error"
 [diagnostics]
@@ -165,6 +170,7 @@ JSON settings can also be passed via LSP init options (these override TOML confi
 | `team`            | Your team's handle for "take ownership" actions                                |
 | `github_token`    | GitHub token for owner validation. Use `env:VAR_NAME` to read from environment |
 | `validate_owners` | Enable GitHub API validation of @user and @org/team (default: false)           |
+| `lookup_cmd`      | Command to resolve git emails to teams for `suggest` (use `{email}` placeholder) |
 | `diagnostics`     | Map of diagnostic code to severity override                                    |
 
 ## Feature Status

@@ -3,6 +3,7 @@ mod commands;
 mod diagnostics;
 mod file_cache;
 mod github;
+mod lookup;
 mod ownership;
 mod parser;
 mod pattern;
@@ -86,6 +87,9 @@ enum Commands {
         /// Maximum number of suggestions
         #[arg(long, default_value = "50")]
         limit: usize,
+        /// Write suggestions to CODEOWNERS file
+        #[arg(short, long)]
+        write: bool,
     },
     /// Suggest optimizations to simplify CODEOWNERS patterns
     Optimize {
@@ -127,6 +131,7 @@ async fn main() -> ExitCode {
             min_confidence,
             format,
             limit,
+            write,
         } => {
             let format = match format.to_lowercase().as_str() {
                 "json" => commands::SuggestFormat::Json,
@@ -138,6 +143,7 @@ async fn main() -> ExitCode {
                 format,
                 limit,
                 include_owned: false,
+                write,
             })
         }
         Commands::Optimize {

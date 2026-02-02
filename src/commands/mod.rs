@@ -10,7 +10,7 @@ mod tree;
 mod validate_owners;
 
 pub use check::check;
-pub use config::config;
+pub use config::{config, load_settings};
 pub use coverage::coverage;
 pub use fix::fix;
 pub use fmt::fmt;

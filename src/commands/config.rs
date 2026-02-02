@@ -10,8 +10,8 @@ use serde::Deserialize;
 const CONFIG_FILE: &str = ".codeowners-lsp.toml";
 const CONFIG_FILE_LOCAL: &str = ".codeowners-lsp.local.toml";
 
-#[derive(Debug, Default, Deserialize)]
-struct Settings {
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct Settings {
     path: Option<String>,
     individual: Option<String>,
     team: Option<String>,
@@ -20,9 +20,17 @@ struct Settings {
     validate_owners: bool,
     #[serde(default)]
     diagnostics: HashMap<String, String>,
+    /// Command to lookup team from email (for suggest command)
+    /// Use {email} as placeholder, e.g.: "houston who is {email} --json | jq .team -r"
+    lookup_cmd: Option<String>,
 }
 
 impl Settings {
+    /// Get the lookup command template if configured
+    pub fn lookup_cmd(&self) -> Option<&str> {
+        self.lookup_cmd.as_deref()
+    }
+
     fn merge(&mut self, other: Settings) {
         if other.path.is_some() {
             self.path = other.path;
@@ -41,6 +49,9 @@ impl Settings {
         }
         for (k, v) in other.diagnostics {
             self.diagnostics.insert(k, v);
+        }
+        if other.lookup_cmd.is_some() {
+            self.lookup_cmd = other.lookup_cmd;
         }
     }
 }
@@ -73,10 +84,10 @@ pub fn config() -> ExitCode {
     // Compute merged config
     let mut merged = Settings::default();
     if let Some(ref settings) = project_config.settings {
-        merged.merge(clone_settings(settings));
+        merged.merge(settings.clone());
     }
     if let Some(ref settings) = local_config.settings {
-        merged.merge(clone_settings(settings));
+        merged.merge(settings.clone());
     }
 
     // Print merged config
@@ -180,6 +191,9 @@ fn print_settings_brief(settings: &Settings) {
             format!("{} rules", settings.diagnostics.len()).cyan()
         );
     }
+    if settings.lookup_cmd.is_some() {
+        println!("           {} {}", "lookup_cmd:".dimmed(), "(set)".cyan());
+    }
 }
 
 fn print_settings(settings: &Settings) {
@@ -245,16 +259,29 @@ fn print_settings(settings: &Settings) {
             println!("    {:<24} {}", code, severity_colored);
         }
     }
+
+    // lookup_cmd
+    print!("  {:<18} ", "lookup_cmd:".cyan());
+    match &settings.lookup_cmd {
+        Some(cmd) => println!("{}", cmd.yellow()),
+        None => println!("{}", "(not set)".dimmed()),
+    }
 }
 
-// Clone settings (can't derive Clone due to HashMap)
-fn clone_settings(s: &Settings) -> Settings {
-    Settings {
-        path: s.path.clone(),
-        individual: s.individual.clone(),
-        team: s.team.clone(),
-        github_token: s.github_token.clone(),
-        validate_owners: s.validate_owners,
-        diagnostics: s.diagnostics.clone(),
+/// Load merged settings from config files
+pub fn load_settings() -> Settings {
+    let cwd = env::current_dir().unwrap_or_default();
+    let config_path = cwd.join(CONFIG_FILE);
+    let local_config_path = cwd.join(CONFIG_FILE_LOCAL);
+
+    let mut merged = Settings::default();
+
+    if let Some(settings) = load_config(&config_path).settings {
+        merged.merge(settings);
     }
+    if let Some(settings) = load_config(&local_config_path).settings {
+        merged.merge(settings);
+    }
+
+    merged
 }

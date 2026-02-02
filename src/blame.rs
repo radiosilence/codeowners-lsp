@@ -229,11 +229,8 @@ fn parse_shortlog_output(output: &str, path: &str) -> Option<OwnerSuggestion> {
     // Sort by commit count (highest first)
     contributors.sort_by(|a, b| b.commit_count.cmp(&a.commit_count));
 
-    // Determine suggested owner and confidence
+    // Determine confidence
     let top_contributor = &contributors[0];
-
-    // Convert email to GitHub username format if possible
-    let suggested_owner = email_to_owner(&top_contributor.email, &top_contributor.name);
 
     // Confidence based on:
     // - Top contributor's percentage of commits
@@ -244,76 +241,16 @@ fn parse_shortlog_output(output: &str, path: &str) -> Option<OwnerSuggestion> {
 
     Some(OwnerSuggestion {
         path: path.to_string(),
-        suggested_owner,
+        suggested_owner: String::new(), // Filled by suggest command using lookup
         confidence,
         contributors,
         total_commits,
     })
 }
 
-/// Convert an email to a CODEOWNERS-compatible owner format
-fn email_to_owner(email: &str, name: &str) -> String {
-    // Check for common GitHub noreply format
-    // e.g., "12345678+username@users.noreply.github.com"
-    if email.contains("@users.noreply.github.com") {
-        if let Some(username) = email
-            .split('@')
-            .next()
-            .and_then(|s| s.split('+').next_back())
-        {
-            return format!("@{}", username);
-        }
-    }
-
-    // Check for GitHub email pattern: username@github.com
-    if email.ends_with("@github.com") {
-        if let Some(username) = email.split('@').next() {
-            return format!("@{}", username);
-        }
-    }
-
-    // For other emails, try to extract a username-like string from the name
-    // But ultimately use the email as-is since it's valid in CODEOWNERS
-    let clean_name = name
-        .to_lowercase()
-        .replace(' ', "-")
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect::<String>();
-
-    if !clean_name.is_empty() && clean_name.len() >= 2 {
-        // Suggest @username format but note it needs verification
-        format!("@{}", clean_name)
-    } else {
-        // Fall back to email
-        email.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_email_to_owner_github_noreply() {
-        assert_eq!(
-            email_to_owner("12345+octocat@users.noreply.github.com", "Octocat"),
-            "@octocat"
-        );
-    }
-
-    #[test]
-    fn test_email_to_owner_github() {
-        assert_eq!(email_to_owner("octocat@github.com", "Octocat"), "@octocat");
-    }
-
-    #[test]
-    fn test_email_to_owner_regular() {
-        assert_eq!(
-            email_to_owner("john.doe@example.com", "John Doe"),
-            "@john-doe"
-        );
-    }
 
     #[test]
     fn test_parse_shortlog() {

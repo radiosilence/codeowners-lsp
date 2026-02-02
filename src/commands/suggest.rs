@@ -2,7 +2,10 @@
 //!
 //! Analyzes git commit history to determine who has been working on unowned
 //! files, then suggests appropriate CODEOWNERS entries.
+//!
+//! Requires `lookup_cmd` config to resolve git emails to team names.
 
+use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 use std::{env, fs};
 
@@ -10,8 +13,11 @@ use colored::Colorize;
 
 use crate::blame::{suggest_owners_for_files, OwnerSuggestion};
 use crate::file_cache::FileCache;
+use crate::lookup::OwnerLookup;
 use crate::ownership::{find_codeowners, get_repo_root};
-use crate::parser;
+use crate::parser::{self, find_insertion_point_with_owner, CodeownersLine};
+
+use super::load_settings;
 
 /// Output format for suggestions
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -36,6 +42,8 @@ pub struct SuggestOptions {
     /// Include files that already have owners (for comparison)
     #[allow(dead_code)] // Reserved for --include-owned flag
     pub include_owned: bool,
+    /// Write suggestions to CODEOWNERS file
+    pub write: bool,
 }
 
 impl Default for SuggestOptions {
@@ -45,6 +53,7 @@ impl Default for SuggestOptions {
             format: OutputFormat::Human,
             limit: 50,
             include_owned: false,
+            write: false,
         }
     }
 }
@@ -102,8 +111,79 @@ pub fn suggest(options: SuggestOptions) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Check for lookup_cmd - required for suggest to work
+    let settings = load_settings();
+    let lookup_cmd = match settings.lookup_cmd() {
+        Some(cmd) => cmd,
+        None => {
+            eprintln!(
+                "{} The suggest command requires lookup_cmd to be configured.",
+                "Error:".red().bold()
+            );
+            eprintln!("  Add to .codeowners-lsp.toml:");
+            eprintln!(
+                "  {}",
+                "lookup_cmd = \"your-tool lookup {email} | jq -r .team\"".dimmed()
+            );
+            return ExitCode::from(1);
+        }
+    };
+
+    // Extract existing owners from CODEOWNERS for fuzzy matching
+    let existing_owners: Vec<String> = lines
+        .iter()
+        .filter_map(|line| {
+            if let CodeownersLine::Rule { owners, .. } = &line.content {
+                Some(owners.clone())
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let mut lookup = OwnerLookup::new(lookup_cmd, existing_owners);
+
     // Analyze git history and get suggestions
     let suggestions = suggest_owners_for_files(&repo_root, &unowned, options.min_confidence);
+
+    // Collect all unique contributor emails for batch lookup
+    let all_emails: Vec<String> = suggestions
+        .iter()
+        .flat_map(|s| s.contributors.iter().map(|c| c.email.clone()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    // Batch lookup all emails in parallel with progress bar
+    let email_to_owner = lookup.batch_lookup(&all_emails);
+
+    // Transform suggestions: use lookup results to pick best team
+    let suggestions: Vec<OwnerSuggestion> = suggestions
+        .into_iter()
+        .filter_map(|mut s| {
+            // For each contributor, use cached lookup and accumulate weighted votes
+            let mut team_votes: HashMap<String, usize> = HashMap::new();
+
+            for contributor in &s.contributors {
+                if let Some(Some(resolved_owner)) = email_to_owner.get(&contributor.email) {
+                    *team_votes.entry(resolved_owner.clone()).or_insert(0) +=
+                        contributor.commit_count;
+                }
+            }
+
+            // Pick the team with the most weighted votes
+            let best_team = team_votes
+                .into_iter()
+                .max_by_key(|(_, votes)| *votes)
+                .map(|(team, _)| team)?;
+
+            s.suggested_owner = best_team;
+            Some(s)
+        })
+        .collect();
 
     if suggestions.is_empty() {
         match options.format {
@@ -134,17 +214,66 @@ pub fn suggest(options: SuggestOptions) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Limit suggestions
+    let suggestions: Vec<_> = suggestions.into_iter().take(options.limit).collect();
+
     // Output based on format
     match options.format {
-        OutputFormat::Human => output_human(&suggestions, &unowned, options.limit),
-        OutputFormat::Codeowners => output_codeowners(&suggestions, options.limit),
+        OutputFormat::Human => output_human(&suggestions, &unowned),
+        OutputFormat::Codeowners => output_codeowners(&suggestions),
         OutputFormat::Json => output_json(&suggestions, &unowned),
+    }
+
+    // Write to file if requested
+    if options.write && !suggestions.is_empty() {
+        let new_content = apply_suggestions(&content, &suggestions);
+        if let Err(e) = fs::write(&codeowners_path, &new_content) {
+            eprintln!(
+                "{} Failed to write {}: {}",
+                "Error:".red().bold(),
+                codeowners_path.display(),
+                e
+            );
+            return ExitCode::from(1);
+        }
+        println!(
+            "\n{} Added {} rules to {}",
+            "✓".green(),
+            suggestions.len(),
+            codeowners_path.display()
+        );
     }
 
     ExitCode::SUCCESS
 }
 
-fn output_human(suggestions: &[OwnerSuggestion], unowned: &[String], limit: usize) {
+/// Apply suggestions to CODEOWNERS content, inserting each rule at the best location
+fn apply_suggestions(content: &str, suggestions: &[OwnerSuggestion]) -> String {
+    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let parsed = parser::parse_codeowners_file(content);
+
+    // Insert suggestions in reverse order of insertion point to avoid index shifting
+    let mut insertions: Vec<(usize, String)> = suggestions
+        .iter()
+        .map(|s| {
+            let insert_idx =
+                find_insertion_point_with_owner(&parsed, &s.path, Some(&s.suggested_owner));
+            let new_line = format!("{} {}", s.path, s.suggested_owner);
+            (insert_idx, new_line)
+        })
+        .collect();
+
+    // Sort by insertion point descending so we insert from bottom to top
+    insertions.sort_by(|a, b| b.0.cmp(&a.0));
+
+    for (idx, line) in insertions {
+        lines.insert(idx, line);
+    }
+
+    lines.join("\n") + "\n"
+}
+
+fn output_human(suggestions: &[OwnerSuggestion], unowned: &[String]) {
     println!(
         "{} Analyzing {} unowned files...\n",
         "→".blue(),
@@ -154,7 +283,7 @@ fn output_human(suggestions: &[OwnerSuggestion], unowned: &[String], limit: usiz
     println!(
         "{} {} {} found:\n",
         "✓".green(),
-        suggestions.len().min(limit),
+        suggestions.len(),
         if suggestions.len() == 1 {
             "suggestion"
         } else {
@@ -162,7 +291,7 @@ fn output_human(suggestions: &[OwnerSuggestion], unowned: &[String], limit: usiz
         }
     );
 
-    for (i, suggestion) in suggestions.iter().take(limit).enumerate() {
+    for (i, suggestion) in suggestions.iter().enumerate() {
         let confidence_color = if suggestion.confidence >= 70.0 {
             suggestion.confidence.to_string().green()
         } else if suggestion.confidence >= 50.0 {
@@ -196,27 +325,19 @@ fn output_human(suggestions: &[OwnerSuggestion], unowned: &[String], limit: usiz
         println!();
     }
 
-    if suggestions.len() > limit {
-        println!(
-            "{} {} more suggestions not shown (use --limit to see more)",
-            "...".dimmed(),
-            suggestions.len() - limit
-        );
-    }
-
     // Print ready-to-use CODEOWNERS lines
-    println!("\n{}", "─".repeat(60).dimmed());
+    println!("{}", "─".repeat(60).dimmed());
     println!("📋 Add to CODEOWNERS:\n");
-    for suggestion in suggestions.iter().take(limit) {
+    for suggestion in suggestions.iter() {
         println!("{} {}", suggestion.path, suggestion.suggested_owner);
     }
 }
 
-fn output_codeowners(suggestions: &[OwnerSuggestion], limit: usize) {
+fn output_codeowners(suggestions: &[OwnerSuggestion]) {
     println!("# Suggested CODEOWNERS entries (generated from git history)");
     println!("# Review and verify before committing!\n");
 
-    for suggestion in suggestions.iter().take(limit) {
+    for suggestion in suggestions.iter() {
         println!(
             "# Confidence: {:.0}% ({} commits)",
             suggestion.confidence, suggestion.total_commits
