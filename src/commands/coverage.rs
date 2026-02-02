@@ -1,6 +1,8 @@
 use std::process::ExitCode;
 use std::{env, fs};
 
+use colored::Colorize;
+
 use crate::file_cache::FileCache;
 use crate::ownership::{find_codeowners, get_repo_root};
 use crate::parser;
@@ -37,20 +39,36 @@ pub fn coverage() -> ExitCode {
         100.0
     };
 
+    // Color the percentage based on coverage level
+    let pct_colored = if coverage_pct >= 90.0 {
+        format!("{:.1}%", coverage_pct).green()
+    } else if coverage_pct >= 70.0 {
+        format!("{:.1}%", coverage_pct).yellow()
+    } else {
+        format!("{:.1}%", coverage_pct).red()
+    };
+
     println!(
-        "Coverage: {:.1}% ({}/{} files have owners)",
-        coverage_pct, owned_count, total_files
+        "{} {} ({}/{} files have owners)",
+        "Coverage:".bold(),
+        pct_colored,
+        owned_count.to_string().green(),
+        total_files
     );
 
     if unowned.is_empty() {
-        println!("\n✓ All files have owners!");
+        println!("\n{} All files have owners!", "✓".green());
     } else {
-        println!("\nFiles without owners ({}):", unowned.len());
+        println!(
+            "\n{} ({}):",
+            "Files without owners".yellow(),
+            unowned.len().to_string().red()
+        );
         for file in unowned.iter().take(50) {
-            println!("  {}", file);
+            println!("  {}", file.dimmed());
         }
         if unowned.len() > 50 {
-            println!("  ... and {} more", unowned.len() - 50);
+            println!("  {} {} more", "...and".dimmed(), unowned.len() - 50);
         }
     }
 

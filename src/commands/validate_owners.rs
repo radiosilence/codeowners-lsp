@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::process::ExitCode;
 use std::{env, fs};
 
+use colored::Colorize;
+
 use crate::github::GitHubClient;
 use crate::ownership::find_codeowners;
 use crate::parser::{parse_codeowners_file_with_positions, CodeownersLine};
@@ -42,13 +44,13 @@ pub async fn validate_owners(token: &str) -> ExitCode {
     }
 
     if owners.is_empty() {
-        println!("No owners found in CODEOWNERS");
+        println!("{}", "No owners found in CODEOWNERS".yellow());
         return ExitCode::SUCCESS;
     }
 
     println!(
         "Validating {} unique owners against GitHub...\n",
-        owners.len()
+        owners.len().to_string().cyan()
     );
 
     let client = GitHubClient::new();
@@ -65,29 +67,39 @@ pub async fn validate_owners(token: &str) -> ExitCode {
 
         match result {
             Some(true) => {
-                println!("  ✓ {}", owner);
+                println!("  {} {}", "✓".green(), owner);
                 valid_count += 1;
             }
             Some(false) => {
-                println!("  ✗ {} (not found)", owner);
+                println!("  {} {} {}", "✗".red(), owner, "(not found)".dimmed());
                 invalid_count += 1;
             }
             None => {
                 // Email or couldn't validate (403 permission)
                 if owner.contains('@') && !owner.starts_with('@') {
-                    println!("  ? {} (email, can't validate)", owner);
+                    println!(
+                        "  {} {} {}",
+                        "?".yellow(),
+                        owner,
+                        "(email, can't validate)".dimmed()
+                    );
                 } else {
-                    println!("  ? {} (couldn't validate - check permissions)", owner);
+                    println!(
+                        "  {} {} {}",
+                        "?".yellow(),
+                        owner,
+                        "(couldn't validate - check permissions)".dimmed()
+                    );
                 }
                 unknown_count += 1;
             }
         }
     }
 
-    println!("\nSummary:");
-    println!("  Valid:   {}", valid_count);
-    println!("  Invalid: {}", invalid_count);
-    println!("  Unknown: {}", unknown_count);
+    println!("\n{}:", "Summary".bold());
+    println!("  {} {}", "Valid:".green(), valid_count);
+    println!("  {} {}", "Invalid:".red(), invalid_count);
+    println!("  {} {}", "Unknown:".yellow(), unknown_count);
 
     if invalid_count > 0 {
         ExitCode::from(1)

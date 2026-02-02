@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::{env, fs};
 
+use colored::Colorize;
+
 use crate::diagnostics;
 use crate::file_cache::FileCache;
 use crate::ownership::{find_codeowners, get_repo_root};
@@ -57,18 +59,22 @@ pub fn lint(path: Option<PathBuf>, json_output: bool) -> ExitCode {
         println!("{}", serde_json::to_string_pretty(&json).unwrap());
     } else {
         if diagnostics.is_empty() {
-            println!("✓ {} - no issues found", codeowners_path.display());
+            println!(
+                "{} {} - no issues found",
+                "✓".green(),
+                codeowners_path.display()
+            );
             return ExitCode::SUCCESS;
         }
 
-        println!("{}:", codeowners_path.display());
+        println!("{}:", codeowners_path.display().to_string().bold());
         for d in &diagnostics {
-            let severity = match d.severity {
-                Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR) => "error",
-                Some(tower_lsp::lsp_types::DiagnosticSeverity::WARNING) => "warning",
-                Some(tower_lsp::lsp_types::DiagnosticSeverity::HINT) => "hint",
-                Some(tower_lsp::lsp_types::DiagnosticSeverity::INFORMATION) => "info",
-                _ => "unknown",
+            let (severity_label, severity_color) = match d.severity {
+                Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR) => ("error", "red"),
+                Some(tower_lsp::lsp_types::DiagnosticSeverity::WARNING) => ("warning", "yellow"),
+                Some(tower_lsp::lsp_types::DiagnosticSeverity::HINT) => ("hint", "cyan"),
+                Some(tower_lsp::lsp_types::DiagnosticSeverity::INFORMATION) => ("info", "blue"),
+                _ => ("unknown", "white"),
             };
             let code = d
                 .code
@@ -79,10 +85,10 @@ pub fn lint(path: Option<PathBuf>, json_output: bool) -> ExitCode {
                 })
                 .unwrap_or_default();
             println!(
-                "  line {}: [{}] {} - {}",
-                d.range.start.line + 1,
-                severity,
-                code,
+                "  {} {} {} {}",
+                format!("line {}:", d.range.start.line + 1).dimmed(),
+                format!("[{}]", severity_label).color(severity_color),
+                code.bold(),
                 d.message
             );
         }

@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::{env, fs};
 
+use colored::Colorize;
+
 use crate::ownership::{apply_safe_fixes, find_codeowners};
 
 pub fn fix(path: Option<PathBuf>, write: bool) -> ExitCode {
@@ -30,7 +32,11 @@ pub fn fix(path: Option<PathBuf>, write: bool) -> ExitCode {
     let result = apply_safe_fixes(&content);
 
     if result.fixes.is_empty() {
-        println!("✓ {} - no fixable issues", codeowners_path.display());
+        println!(
+            "{} {} - no fixable issues",
+            "✓".green(),
+            codeowners_path.display()
+        );
         return ExitCode::SUCCESS;
     }
 
@@ -38,30 +44,40 @@ pub fn fix(path: Option<PathBuf>, write: bool) -> ExitCode {
         match fs::write(&codeowners_path, &result.content) {
             Ok(_) => {
                 println!(
-                    "✓ Fixed {} ({} changes):",
+                    "{} Fixed {} ({} changes):",
+                    "✓".green(),
                     codeowners_path.display(),
-                    result.fixes.len()
+                    result.fixes.len().to_string().cyan()
                 );
                 for fix in &result.fixes {
-                    println!("  - {}", fix);
+                    println!("  {} {}", "-".green(), fix);
                 }
                 ExitCode::SUCCESS
             }
             Err(e) => {
-                eprintln!("Failed to write {}: {}", codeowners_path.display(), e);
+                eprintln!(
+                    "{} Failed to write {}: {}",
+                    "✗".red(),
+                    codeowners_path.display(),
+                    e
+                );
                 ExitCode::from(1)
             }
         }
     } else {
         println!(
             "Would fix {} ({} changes):",
-            codeowners_path.display(),
-            result.fixes.len()
+            codeowners_path.display().to_string().bold(),
+            result.fixes.len().to_string().cyan()
         );
         for fix in &result.fixes {
-            println!("  - {}", fix);
+            println!("  {} {}", "-".yellow(), fix);
         }
-        println!("\nRun with --write or -w to apply fixes");
+        println!(
+            "\nRun with {} or {} to apply fixes",
+            "--write".cyan(),
+            "-w".cyan()
+        );
         ExitCode::from(1)
     }
 }

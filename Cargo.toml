@@ -20,6 +20,7 @@ path = "src/cli.rs"
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 codeowners = "0.1"
+colored = "2"
 fast-glob = "1.0"
 glob = "0.3"
 ignore = "0.4"

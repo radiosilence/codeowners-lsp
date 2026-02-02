@@ -2,19 +2,33 @@ use std::collections::HashSet;
 use std::process::ExitCode;
 use std::{env, fs};
 
+use colored::{Color, Colorize};
+
 use crate::file_cache::FileCache;
 use crate::ownership::{check_file_ownership, find_codeowners, get_repo_root};
 
-/// Generate a consistent ANSI color code from a string (for terminal output)
-fn owner_color(owner: &str) -> u8 {
-    // Use a simple hash to generate a color code
+/// Generate a consistent color from a string
+fn owner_color(owner: &str) -> Color {
     let mut hash: u32 = 0;
     for byte in owner.bytes() {
         hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
     }
-    // Map to bright colors (avoiding dark colors that are hard to read)
-    // Use colors 1-14 (skip 0=black and 15=white)
-    ((hash % 14) + 1) as u8
+    // Pick from a set of distinct, readable colors
+    let colors = [
+        Color::Red,
+        Color::Green,
+        Color::Yellow,
+        Color::Blue,
+        Color::Magenta,
+        Color::Cyan,
+        Color::BrightRed,
+        Color::BrightGreen,
+        Color::BrightYellow,
+        Color::BrightBlue,
+        Color::BrightMagenta,
+        Color::BrightCyan,
+    ];
+    colors[(hash as usize) % colors.len()]
 }
 
 pub fn tree() -> ExitCode {
@@ -60,22 +74,22 @@ pub fn tree() -> ExitCode {
     let mut owners_list: Vec<_> = seen_owners.into_iter().collect();
     owners_list.sort();
 
-    println!("Legend:");
+    println!("{}:", "Legend".bold());
     for owner in &owners_list {
         let color = owner_color(owner);
-        println!("  \x1b[38;5;{}m██\x1b[0m {}", color, owner);
+        println!("  {} {}", "██".color(color), owner);
     }
-    println!("  \x1b[90m██\x1b[0m (no owner)\n");
+    println!("  {} {}\n", "██".dimmed(), "(no owner)".dimmed());
 
     // Print files
     for (file, owners) in &files_with_owners {
         match owners {
             Some(owner) => {
                 let color = owner_color(owner);
-                println!("\x1b[38;5;{}m{}\x1b[0m", color, file);
+                println!("{}", file.color(color));
             }
             None => {
-                println!("\x1b[90m{}\x1b[0m", file);
+                println!("{}", file.dimmed());
             }
         }
     }

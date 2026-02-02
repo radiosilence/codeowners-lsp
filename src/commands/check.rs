@@ -1,6 +1,8 @@
 use std::process::ExitCode;
 use std::{env, fs};
 
+use colored::Colorize;
+
 use crate::ownership::{check_file_ownership, find_codeowners};
 
 pub fn check(file_path: &str) -> ExitCode {
@@ -24,14 +26,23 @@ pub fn check(file_path: &str) -> ExitCode {
 
     match check_file_ownership(&content, file_path) {
         Some(result) => {
-            println!("File: {}", file_path);
-            println!("Rule: {} (line {})", result.pattern, result.line_number + 1);
-            println!("Owners: {}", result.owners.join(" "));
+            println!("{} {}", "File:".bold(), file_path);
+            println!(
+                "{} {} {}",
+                "Rule:".bold(),
+                result.pattern.cyan(),
+                format!("(line {})", result.line_number + 1).dimmed()
+            );
+            println!("{} {}", "Owners:".bold(), result.owners.join(" ").green());
             ExitCode::SUCCESS
         }
         None => {
-            println!("File: {}", file_path);
-            println!("No matching rule found - file has no owners");
+            println!("{} {}", "File:".bold(), file_path);
+            println!(
+                "{} {}",
+                "✗".red(),
+                "No matching rule - file has no owners".yellow()
+            );
             ExitCode::from(1)
         }
     }
