@@ -5,6 +5,7 @@ use tower_lsp::lsp_types::*;
 use crate::file_cache::FileCache;
 use crate::github::GitHubClient;
 use crate::parser::{parse_codeowners_file_with_positions, CodeownersLine, ParsedLine};
+use crate::pattern::pattern_subsumes;
 use crate::validation::{validate_owner, validate_pattern};
 
 /// Diagnostic codes for CODEOWNERS issues
@@ -142,7 +143,19 @@ pub fn compute_diagnostics_sync(
 
             // Check for dead rules (earlier pattern completely shadowed by later)
             for (prev_pattern, prev_line) in &seen_patterns {
-                if prev_pattern == pattern {
+                if pattern_subsumes(prev_pattern, pattern) {
+                    let message = if prev_pattern == pattern {
+                        format!(
+                            "This rule is shadowed by a later rule on line {} with the same pattern",
+                            parsed_line.line_number + 1
+                        )
+                    } else {
+                        format!(
+                            "This rule is shadowed by a more general pattern '{}' on line {}",
+                            pattern,
+                            parsed_line.line_number + 1
+                        )
+                    };
                     diagnostics.push(Diagnostic {
                         range: Range {
                             start: Position {
@@ -157,10 +170,7 @@ pub fn compute_diagnostics_sync(
                         severity: Some(DiagnosticSeverity::HINT),
                         code: Some(NumberOrString::String(codes::SHADOWED_RULE.to_string())),
                         source: Some("codeowners".to_string()),
-                        message: format!(
-                            "This rule is shadowed by a later rule on line {} with the same pattern",
-                            parsed_line.line_number + 1
-                        ),
+                        message,
                         tags: Some(vec![DiagnosticTag::UNNECESSARY]),
                         ..Default::default()
                     });

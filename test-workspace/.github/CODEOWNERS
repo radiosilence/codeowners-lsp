@@ -1,0 +1,35 @@
+# CODEOWNERS file with various issues for testing
+
+# Specific rule first
+*.rs @rustacean
+
+# Catch-all AFTER specific rule - this shadows the *.rs rule above!
+# (CODEOWNERS uses last-match-wins semantics)
+* @radiosilence
+
+# Duplicate owners
+/src/ @alice @bob @alice
+
+# Invalid owner format (missing @)
+/docs/ alice
+
+# Pattern matching no files
+/nonexistent/path/ @ghost
+
+# Rule with no owners
+/empty/
+
+# Duplicate pattern - this shadows line 4
+*.rs @maintainer
+
+# Valid rule that should work
+Cargo.toml @radiosilence
+
+# Email owner (valid format)
+/config/ user@example.com
+
+# Team owner (valid format)
+/ci/ @org/devops-team
+
+# Invalid team format
+/.github/ @org/team/subteam
