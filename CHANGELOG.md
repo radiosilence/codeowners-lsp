@@ -5,6 +5,8 @@
 ### Added
 
 - **`fix` command** in CLI - auto-fix safe issues (duplicate owners, shadowed rules)
+- **`textDocument/formatting`** in LSP - editors like Zed can now use CODEOWNERS-LSP as formatter
+- **Clickable owner links** in hover - `@user` and `@org/team` now link to GitHub profiles/teams
 
 ### Changed
 

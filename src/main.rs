@@ -631,6 +631,7 @@ impl LanguageServer for Backend {
                     trigger_characters: Some(vec!["/".to_string(), "@".to_string()]),
                     ..Default::default()
                 }),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -698,11 +699,11 @@ impl LanguageServer for Backend {
             Some(owners) => {
                 let owner_list: Vec<&str> = owners.split_whitespace().collect();
                 if owner_list.len() == 1 {
-                    format!("**Owner:** `{}`", owner_list[0])
+                    format!("**Owner:** {}", format_owner_link(owner_list[0]))
                 } else {
                     let list = owner_list
                         .iter()
-                        .map(|o| format!("- `{}`", o))
+                        .map(|o| format!("- {}", format_owner_link(o)))
                         .collect::<Vec<_>>()
                         .join("\n");
                     format!("**Owners:**\n{}", list)
@@ -1242,6 +1243,127 @@ impl LanguageServer for Backend {
             Ok(Some(CompletionResponse::Array(items)))
         }
     }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = &params.text_document.uri;
+
+        // Only format CODEOWNERS files
+        if !self.is_codeowners_file(uri) {
+            return Ok(None);
+        }
+
+        let codeowners_path = self.codeowners_path.read().unwrap();
+        let path = match codeowners_path.as_ref() {
+            Some(p) => p.clone(),
+            None => return Ok(None),
+        };
+        drop(codeowners_path);
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+
+        let formatted = format_codeowners(&content);
+
+        if formatted == content {
+            return Ok(None); // No changes needed
+        }
+
+        // Return a single edit that replaces the entire document
+        let line_count = content.lines().count();
+        let last_line_len = content.lines().last().map(|l| l.len()).unwrap_or(0);
+
+        Ok(Some(vec![TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: line_count as u32,
+                    character: last_line_len as u32,
+                },
+            },
+            new_text: formatted,
+        }]))
+    }
+}
+
+/// Format an owner as a clickable GitHub link
+fn format_owner_link(owner: &str) -> String {
+    if let Some(user) = owner.strip_prefix('@') {
+        if user.contains('/') {
+            // Team: @org/team -> https://github.com/orgs/org/teams/team
+            let parts: Vec<&str> = user.splitn(2, '/').collect();
+            if parts.len() == 2 {
+                let url = format!("https://github.com/orgs/{}/teams/{}", parts[0], parts[1]);
+                return format!("[`{}`]({})", owner, url);
+            }
+        } else {
+            // User: @user -> https://github.com/user
+            let url = format!("https://github.com/{}", user);
+            return format!("[`{}`]({})", owner, url);
+        }
+    } else if owner.contains('@') {
+        // Email - no link, just format
+        return format!("`{}`", owner);
+    }
+    // Fallback
+    format!("`{}`", owner)
+}
+
+/// Format CODEOWNERS content (same logic as CLI)
+fn format_codeowners(content: &str) -> String {
+    let mut result = Vec::new();
+    let mut prev_was_empty = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Preserve blank lines but collapse multiple
+        if trimmed.is_empty() {
+            if !prev_was_empty && !result.is_empty() {
+                result.push(String::new());
+            }
+            prev_was_empty = true;
+            continue;
+        }
+        prev_was_empty = false;
+
+        // Comments: normalize to single space after #
+        if let Some(comment_text) = trimmed.strip_prefix('#') {
+            let comment_text = comment_text.trim();
+            if comment_text.is_empty() {
+                result.push("#".to_string());
+            } else {
+                result.push(format!("# {}", comment_text));
+            }
+            continue;
+        }
+
+        // Rules: normalize spacing between pattern and owners
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        let pattern = parts[0];
+        let owners = &parts[1..];
+
+        if owners.is_empty() {
+            result.push(pattern.to_string());
+        } else {
+            result.push(format!("{} {}", pattern, owners.join(" ")));
+        }
+    }
+
+    // Ensure trailing newline
+    let mut output = result.join("\n");
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output
 }
 
 #[tokio::main]

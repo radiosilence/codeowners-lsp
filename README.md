@@ -28,7 +28,7 @@ codeowners-cli fix --write            # Apply fixes
 
 ### In Any File
 
-- **Hover**: Shows file ownership when hovering over any code
+- **Hover**: Shows file ownership with clickable links to GitHub profiles/teams
 - **Inlay Hints**: Displays ownership at the top of each file
 - **Go-to-Definition**: Jump to the CODEOWNERS rule that matches the current file
 - **Code Actions**: Take ownership of files directly from your editor
@@ -117,6 +117,8 @@ The LSP finds CODEOWNERS in standard locations: `.github/CODEOWNERS`, `CODEOWNER
 | Code actions: add owner               | ✅     |
 | Code actions: add catch-all           | ✅     |
 | CLI: fix (auto-fix safe issues)       | ✅     |
+| LSP: textDocument/formatting          | ✅     |
+| Hover: clickable GitHub links         | ✅     |
 
 ## License
 
