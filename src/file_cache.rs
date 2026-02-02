@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::RwLock;
 
 use ignore::WalkBuilder;
 use rayon::prelude::*;
@@ -8,9 +9,57 @@ use rayon::prelude::*;
 use crate::parser::{CodeownersLine, ParsedLine};
 use crate::pattern::{pattern_matches, CompiledPattern};
 
-/// Cached list of files in the workspace
+/// Check if characters in needle appear in order in haystack (fuzzy match)
+fn fuzzy_match(haystack: &str, needle: &str) -> bool {
+    let mut needle_chars = needle.chars().peekable();
+
+    for c in haystack.chars() {
+        if needle_chars.peek() == Some(&c) {
+            needle_chars.next();
+        }
+        if needle_chars.peek().is_none() {
+            return true;
+        }
+    }
+
+    needle_chars.peek().is_none()
+}
+
+/// Files/patterns to ignore internally (LSP's own config, not subject to CODEOWNERS rules)
+pub const INTERNAL_IGNORE: &[&str] = &[
+    ".codeowners-lsp.toml",
+    ".codeowners-lsp.local.toml",
+    ".codeowners-lsp/",
+];
+
+/// Check if a path should be internally ignored
+pub fn is_internally_ignored(path: &str) -> bool {
+    for pattern in INTERNAL_IGNORE {
+        if pattern.ends_with('/') {
+            // Directory pattern
+            let dir_name = pattern.trim_end_matches('/');
+            if path.starts_with(&format!("{}/", dir_name))
+                || path.contains(&format!("/{}/", dir_name))
+            {
+                return true;
+            }
+        } else {
+            // File pattern
+            if path == *pattern || path.ends_with(&format!("/{}", pattern)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Cached list of files in the workspace with pattern match caching
 pub struct FileCache {
     files: Vec<String>,
+    /// Cache of pattern -> match count (lazily populated)
+    count_cache: RwLock<HashMap<String, usize>>,
+    /// Cache of pattern -> has_match (lazily populated)
+    has_match_cache: RwLock<HashSet<String>>,
 }
 
 impl FileCache {
@@ -23,63 +72,158 @@ impl FileCache {
             .git_global(true)
             .git_exclude(true)
             .filter_entry(|e| {
-                // Exclude .git directory
-                e.file_name() != ".git"
+                let name = e.file_name().to_string_lossy();
+                // Exclude .git directory and LSP internal directories
+                name != ".git" && name != ".codeowners-lsp"
             })
             .build();
 
         for entry in walker.flatten() {
             if entry.file_type().is_some_and(|ft| ft.is_file()) {
                 if let Ok(relative) = entry.path().strip_prefix(root) {
-                    files.push(relative.to_string_lossy().to_string());
+                    let path = relative.to_string_lossy().to_string();
+                    // Skip internally ignored files
+                    if !is_internally_ignored(&path) {
+                        files.push(path);
+                    }
                 }
             }
         }
 
-        Self { files }
+        Self {
+            files,
+            count_cache: RwLock::new(HashMap::new()),
+            has_match_cache: RwLock::new(HashSet::new()),
+        }
     }
 
-    /// Count files matching a pattern
+    /// Count files matching a pattern (blocking, computes and caches)
+    /// For CLI and sync contexts
+    #[allow(dead_code)] // Used by CLI, not LSP
     pub fn count_matches(&self, pattern: &str) -> usize {
-        self.files
+        // Check cache first
+        {
+            let cache = self.count_cache.read().unwrap();
+            if let Some(&count) = cache.get(pattern) {
+                return count;
+            }
+        }
+
+        // Compute and cache
+        let count = self
+            .files
             .iter()
             .filter(|f| pattern_matches(pattern, f))
-            .count()
+            .count();
+
+        self.count_cache
+            .write()
+            .unwrap()
+            .insert(pattern.to_string(), count);
+        count
+    }
+
+    /// Count files matching a pattern (non-blocking, returns None if not cached)
+    /// For LSP inlay hints - doesn't block if count not yet computed
+    #[allow(dead_code)] // Used by LSP, not CLI
+    pub fn count_matches_cached(&self, pattern: &str) -> Option<usize> {
+        let cache = self.count_cache.read().unwrap();
+        cache.get(pattern).copied()
+    }
+
+    /// Check if a pattern has any matches (cached, faster than count_matches for existence check)
+    #[allow(dead_code)] // Used internally by find_patterns_with_matches
+    pub fn has_matches(&self, pattern: &str) -> bool {
+        // Check cache first
+        {
+            let cache = self.has_match_cache.read().unwrap();
+            if cache.contains(pattern) {
+                return true;
+            }
+        }
+
+        // Also check count cache (if we already counted, use that)
+        {
+            let cache = self.count_cache.read().unwrap();
+            if let Some(&count) = cache.get(pattern) {
+                return count > 0;
+            }
+        }
+
+        // Compute (early exit on first match)
+        let has_match = self.files.iter().any(|f| pattern_matches(pattern, f));
+
+        if has_match {
+            self.has_match_cache
+                .write()
+                .unwrap()
+                .insert(pattern.to_string());
+        }
+        has_match
     }
 
     /// Find which patterns have at least one matching file.
     /// Returns a set of pattern indices that have matches.
-    /// Uses parallel iteration for performance on large repos.
+    /// Uses caching for previously checked patterns.
     pub fn find_patterns_with_matches(&self, patterns: &[&str]) -> HashSet<usize> {
-        // Pre-compile all patterns once (avoids allocations per match)
-        let compiled: Vec<CompiledPattern> =
-            patterns.iter().map(|p| CompiledPattern::new(p)).collect();
+        let mut result = HashSet::new();
+        let mut uncached_patterns: Vec<(usize, &str)> = Vec::new();
 
-        // Create atomic flags for each pattern (true = has match)
-        let flags: Vec<AtomicBool> = (0..patterns.len())
+        // First pass: check caches
+        {
+            let has_match_cache = self.has_match_cache.read().unwrap();
+            let count_cache = self.count_cache.read().unwrap();
+
+            for (i, pattern) in patterns.iter().enumerate() {
+                if has_match_cache.contains(*pattern) {
+                    result.insert(i);
+                } else if let Some(&count) = count_cache.get(*pattern) {
+                    if count > 0 {
+                        result.insert(i);
+                    }
+                    // If count is 0, we know it has no matches - skip
+                } else {
+                    uncached_patterns.push((i, pattern));
+                }
+            }
+        }
+
+        // If all patterns were cached, return early
+        if uncached_patterns.is_empty() {
+            return result;
+        }
+
+        // Second pass: compute uncached patterns in parallel
+        let compiled: Vec<(usize, CompiledPattern)> = uncached_patterns
+            .iter()
+            .map(|(i, p)| (*i, CompiledPattern::new(p)))
+            .collect();
+
+        let flags: Vec<AtomicBool> = (0..compiled.len())
             .map(|_| AtomicBool::new(false))
             .collect();
 
-        // Process files in parallel
         self.files.par_iter().for_each(|file| {
-            for (i, pattern) in compiled.iter().enumerate() {
-                // Skip if already matched (relaxed is fine, just an optimization)
-                if flags[i].load(Ordering::Relaxed) {
+            for (idx, (_, pattern)) in compiled.iter().enumerate() {
+                if flags[idx].load(Ordering::Relaxed) {
                     continue;
                 }
                 if pattern.matches(file) {
-                    flags[i].store(true, Ordering::Relaxed);
+                    flags[idx].store(true, Ordering::Relaxed);
                 }
             }
         });
 
-        // Collect results
-        flags
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| f.load(Ordering::Relaxed))
-            .map(|(i, _)| i)
-            .collect()
+        // Update caches and result
+        let mut has_match_cache = self.has_match_cache.write().unwrap();
+        for (idx, (orig_idx, pattern)) in uncached_patterns.iter().enumerate() {
+            if flags[idx].load(Ordering::Relaxed) {
+                result.insert(*orig_idx);
+                has_match_cache.insert(pattern.to_string());
+            }
+        }
+
+        result
     }
 
     /// Get files matching a pattern
@@ -97,32 +241,88 @@ impl FileCache {
         &self.files
     }
 
-    /// Get files/dirs matching a prefix for path completion
+    /// Get files matching a query for path completion (fzf-style)
+    ///
+    /// Matches files where the query appears anywhere in the path.
+    /// - "main" matches "src/main.rs"
+    /// - "src/main" matches "src/main.rs"
+    /// - "s/m" fuzzy matches "src/main.rs"
     #[allow(dead_code)] // Used by LSP, not CLI
-    pub fn complete_path(&self, prefix: &str) -> Vec<String> {
-        let prefix = prefix.trim_start_matches('/');
-        let mut seen = std::collections::HashSet::new();
-        let mut completions = Vec::new();
+    pub fn complete_path(&self, query: &str) -> Vec<String> {
+        let has_leading_slash = query.starts_with('/');
+        let normalized = query
+            .trim_start_matches('/')
+            .trim_start_matches("./")
+            .to_lowercase();
 
-        for file in &self.files {
-            if let Some(remainder) = file.strip_prefix(prefix) {
-                // Add the file itself
-                completions.push(format!("/{}", file));
-                seen.insert(format!("/{}", file));
+        if normalized.is_empty() {
+            // Empty query - return top-level items only
+            let mut dirs = HashSet::new();
+            let mut files = Vec::new();
 
-                // Also add parent directories
-                if let Some(slash_pos) = remainder.find('/') {
-                    let dir = format!("/{}{}/", prefix, &remainder[..slash_pos]);
-                    if seen.insert(dir.clone()) {
-                        completions.push(dir);
-                    }
+            for file in &self.files {
+                if let Some(slash_pos) = file.find('/') {
+                    dirs.insert(format!("{}/", &file[..slash_pos]));
+                } else {
+                    files.push(file.clone());
                 }
             }
+
+            let format_path = |path: String| -> String {
+                if has_leading_slash {
+                    format!("/{}", path)
+                } else {
+                    path
+                }
+            };
+
+            let mut completions: Vec<String> = dirs.into_iter().map(&format_path).collect();
+            completions.sort();
+            let mut file_completions: Vec<String> = files.into_iter().map(format_path).collect();
+            file_completions.sort();
+            completions.extend(file_completions);
+            completions.truncate(50);
+            return completions;
         }
 
-        completions.sort();
-        completions.truncate(50); // Limit completions
-        completions
+        // Score and collect matching files
+        let mut matches: Vec<(String, i32)> = Vec::new();
+
+        for file in &self.files {
+            let file_lower = file.to_lowercase();
+
+            // Calculate match score (higher = better)
+            let score = if file_lower.starts_with(&normalized) {
+                100 // Exact prefix match
+            } else if file_lower.contains(&normalized) {
+                50 // Substring match
+            } else if fuzzy_match(&file_lower, &normalized) {
+                25 // Fuzzy match (characters in order)
+            } else {
+                continue; // No match
+            };
+
+            // Bonus for shorter paths (more specific)
+            let length_bonus = 20 - (file.len() as i32).min(20);
+
+            matches.push((file.clone(), score + length_bonus));
+        }
+
+        // Sort by score (descending), then alphabetically
+        matches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        // Format output
+        matches
+            .into_iter()
+            .take(50)
+            .map(|(path, _)| {
+                if has_leading_slash {
+                    format!("/{}", path)
+                } else {
+                    path
+                }
+            })
+            .collect()
     }
 
     /// Get files with no owners according to the given rules

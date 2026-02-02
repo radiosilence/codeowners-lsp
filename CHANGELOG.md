@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.6.0] - 2026-02-02
+
+### Performance
+
+- **Non-blocking LSP main loop** - all heavy work (file scanning, pattern matching, GitHub validation) now runs in background threads via `spawn_blocking`, so the editor never lags
+- **Pattern match caching** - file match counts are cached per-pattern, making repeated inlay hints/diagnostics instant
+- **Inlay hints only compute visible range** - instead of computing all 3000+ lines, only computes hints for lines actually on screen
+- **29x faster on large repos** - combined optimizations turn 20+ second delays into sub-second responses
+
+### Added
+
+- **Rich hover for @owners in CODEOWNERS** - hover over any @user or @org/team to see profile info, bio, team description, member counts, with avatars (in supported editors)
+- **fzf-style fuzzy path completion** - type `s/m` to match `src/main.rs`, scores: exact prefix > substring > fuzzy
+- **Background GitHub validation** - new owners are validated async on save, fetches full metadata for rich hover
+- **Internal ignore list** - LSP config files (`.codeowners-lsp.toml`, `.codeowners-lsp/`) excluded from file-not-owned diagnostics
+- **Persistent metadata cache** - GitHub user/team info cached to `.codeowners-lsp/cache.json` with auto-gitignore
+
+### Fixed
+
+- **Autocomplete replaces instead of appends** - completion items now use proper `text_edit` with replacement range
+- **CODEOWNERS changes detected live** - editing CODEOWNERS buffer updates diagnostics immediately (not just on save)
+- **Inlay hints refresh on CODEOWNERS change** - ownership hints in other files update when CODEOWNERS is modified
+- **Path completion works without leading `/`** - `src/main` and `/src/main` both work correctly
+
 ## [0.5.3] - 2026-02-02
 
 ### Added

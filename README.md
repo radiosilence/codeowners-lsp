@@ -38,7 +38,7 @@ codeowners-cli completions bash       # bash, zsh, fish, powershell, elvish
 
 ### In Any File
 
-- **Hover**: Shows file ownership with clickable links to GitHub profiles/teams
+- **Hover**: Shows file ownership with clickable GitHub links and rich metadata (team descriptions, member counts, user bios)
 - **Inlay Hints**: Displays ownership at the top of each file
 - **Go-to-Definition**: Jump to the CODEOWNERS rule that matches the current file
 - **Code Actions**: Take ownership of files directly from your editor
@@ -53,8 +53,8 @@ codeowners-cli completions bash       # bash, zsh, fish, powershell, elvish
   - Rules with no owners
   - Coverage: count of files without owners
 - **Completions**:
-  - Path completions as you type (trigger: `/`)
-  - Owner completions from GitHub API (trigger: `@`, requires `validate_owners`)
+  - fzf-style fuzzy path completions (e.g., `s/m` matches `src/main.rs`)
+  - Owner completions from GitHub API with background validation (trigger: `@`)
 - **Inlay Hints**: Shows how many files each pattern matches
 - **Code Actions**:
   - Remove shadowed rules
@@ -62,6 +62,8 @@ codeowners-cli completions bash       # bash, zsh, fish, powershell, elvish
   - Add owner to empty rules
   - Add catch-all rule for unowned files
 - **GitHub Validation** (optional): Validates users/teams exist on GitHub
+
+All heavy operations (file scanning, pattern matching, GitHub API calls) run in background threads—the LSP never blocks your editor.
 
 ## Installation
 
@@ -170,6 +172,9 @@ JSON settings can also be passed via LSP init options (these override TOML confi
 | CLI: validate-owners                  | ✅     |
 | CLI: tree (color-coded by owner)      | ✅     |
 | CLI: shell completions                | ✅     |
+| Hover: rich team/user metadata        | ✅     |
+| fzf-style fuzzy path completion       | ✅     |
+| Background GitHub validation          | ✅     |
 
 ## License
 

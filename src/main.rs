@@ -18,7 +18,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use diagnostics::{compute_diagnostics_sync, DiagnosticConfig};
-use file_cache::FileCache;
+use file_cache::{is_internally_ignored, FileCache};
 use github::{GitHubClient, PersistentCache};
 use ownership::{apply_safe_fixes, check_file_ownership};
 use parser::{
@@ -83,6 +83,8 @@ struct Backend {
     settings: RwLock<Settings>,
     file_cache: RwLock<Option<FileCache>>,
     github_client: Arc<GitHubClient>,
+    /// Track open documents to refresh diagnostics when CODEOWNERS changes
+    open_documents: RwLock<HashMap<Url, String>>,
 }
 
 /// Config file names
@@ -99,6 +101,7 @@ impl Backend {
             settings: RwLock::new(Settings::default()),
             file_cache: RwLock::new(None),
             github_client: Arc::new(GitHubClient::new()),
+            open_documents: RwLock::new(HashMap::new()),
         }
     }
 
@@ -143,39 +146,64 @@ impl Backend {
         })
     }
 
-    fn load_codeowners(&self) -> Option<PathBuf> {
-        let root = self.workspace_root.read().unwrap();
-        let root = root.as_ref()?;
-        let settings = self.settings.read().unwrap();
+    /// Load CODEOWNERS - runs in blocking thread pool
+    async fn load_codeowners(&self) -> Option<PathBuf> {
+        let root = self.workspace_root.read().unwrap().clone()?;
+        let custom_path = self.settings.read().unwrap().path.clone();
 
-        // If custom path is set, use it
-        if let Some(custom_path) = &settings.path {
-            let path = root.join(custom_path);
-            if path.exists() {
-                let owners = codeowners::from_path(&path);
-                *self.codeowners.write().unwrap() = Some(owners);
-                *self.codeowners_path.write().unwrap() = Some(path.clone());
-                return Some(path);
+        // Heavy work in blocking thread
+        let result = tokio::task::spawn_blocking(move || {
+            // If custom path is set, use it
+            if let Some(custom) = &custom_path {
+                let path = root.join(custom);
+                if path.exists() {
+                    let owners = codeowners::from_path(&path);
+                    return Some((Some(owners), Some(path)));
+                }
             }
-        }
 
-        // Otherwise use the crate's locate function
-        if let Some(path) = codeowners::locate(root) {
-            let owners = codeowners::from_path(&path);
-            *self.codeowners.write().unwrap() = Some(owners);
-            *self.codeowners_path.write().unwrap() = Some(path.clone());
-            return Some(path);
-        }
+            // Otherwise use the crate's locate function
+            if let Some(path) = codeowners::locate(&root) {
+                let owners = codeowners::from_path(&path);
+                return Some((Some(owners), Some(path)));
+            }
 
-        *self.codeowners.write().unwrap() = None;
-        *self.codeowners_path.write().unwrap() = None;
+            Some((None, None))
+        })
+        .await
+        .ok()
+        .flatten();
+
+        // Write results back (fast)
+        if let Some((owners, path)) = result {
+            *self.codeowners.write().unwrap() = owners;
+            *self.codeowners_path.write().unwrap() = path.clone();
+            return path;
+        }
         None
     }
 
-    fn refresh_file_cache(&self) {
-        let root = self.workspace_root.read().unwrap();
-        if let Some(root) = root.as_ref() {
-            *self.file_cache.write().unwrap() = Some(FileCache::new(root));
+    /// Load CODEOWNERS rules from buffer content (for unsaved changes)
+    fn load_codeowners_from_content(&self, content: &str) {
+        use std::io::Cursor;
+        let owners = codeowners::from_reader(Cursor::new(content));
+        *self.codeowners.write().unwrap() = Some(owners);
+    }
+
+    /// Refresh file cache - runs in blocking thread pool
+    async fn refresh_file_cache(&self) {
+        let Some(root) = self.workspace_root.read().unwrap().clone() else {
+            return;
+        };
+
+        // Heavy work in blocking thread
+        let cache = tokio::task::spawn_blocking(move || FileCache::new(&root))
+            .await
+            .ok();
+
+        // Write back (fast)
+        if let Some(cache) = cache {
+            *self.file_cache.write().unwrap() = Some(cache);
         }
     }
 
@@ -189,7 +217,6 @@ impl Backend {
     }
 
     /// Save in-memory cache to disk
-    #[allow(dead_code)] // May be used later
     fn save_persistent_cache(&self) {
         let root = self.workspace_root.read().unwrap();
         if let Some(root) = root.as_ref() {
@@ -198,14 +225,146 @@ impl Backend {
         }
     }
 
-    /// Collect all unique owners from CODEOWNERS file
-    fn collect_owners_from_codeowners(&self) -> Vec<String> {
-        let codeowners_path = self.codeowners_path.read().unwrap();
-        let Some(path) = codeowners_path.as_ref() else {
-            return Vec::new();
+    /// Refresh diagnostics for all open documents (call when CODEOWNERS is saved)
+    async fn refresh_all_open_documents(&self) {
+        let documents: Vec<(Url, String)> = self
+            .open_documents
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        for (uri, text) in documents {
+            if self.is_codeowners_file(&uri) {
+                let diagnostics = self.compute_diagnostics(&text).await;
+                self.client
+                    .publish_diagnostics(uri, diagnostics, None)
+                    .await;
+            } else {
+                let line_count = text.lines().count() as u32;
+                let diagnostics = self.check_file_not_owned(&uri, line_count);
+                self.client
+                    .publish_diagnostics(uri, diagnostics, None)
+                    .await;
+            }
+        }
+    }
+
+    /// Refresh only file-not-owned diagnostics (cheap, no GitHub validation)
+    async fn refresh_file_not_owned_diagnostics(&self) {
+        let documents: Vec<_> = self
+            .open_documents
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(uri, _)| !self.is_codeowners_file(uri))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        for (uri, text) in documents {
+            let line_count = text.lines().count() as u32;
+            let diagnostics = self.check_file_not_owned(&uri, line_count);
+            self.client
+                .publish_diagnostics(uri, diagnostics, None)
+                .await;
+        }
+    }
+
+    /// Validate uncached owners in background and refresh diagnostics when done
+    async fn validate_owners_background(
+        &self,
+        uri: Url,
+        owners: Vec<diagnostics::OwnerValidationInfo>,
+    ) {
+        // Check if validation is enabled
+        let (enabled, token) = {
+            let settings = self.settings.read().unwrap();
+            (settings.validate_owners, self.get_github_token())
         };
 
-        let Ok(content) = fs::read_to_string(path) else {
+        if !enabled {
+            return;
+        }
+        let Some(token) = token else {
+            return;
+        };
+
+        // Find owners not already in cache
+        let uncached: Vec<_> = owners
+            .iter()
+            .filter(|(_, _, owner, _)| !self.github_client.is_cached(owner))
+            .map(|(_, _, owner, _)| owner.clone())
+            .collect();
+
+        if uncached.is_empty() {
+            return;
+        }
+
+        // Validate uncached owners and fetch metadata (this is async but we don't block)
+        let mut any_validated = false;
+        for owner in uncached {
+            if self
+                .github_client
+                .validate_owner_with_info(&owner, &token)
+                .await
+                .is_some()
+            {
+                any_validated = true;
+            }
+        }
+
+        // If we validated anything, save cache and refresh diagnostics
+        if any_validated {
+            // Save to persistent cache so it survives restarts
+            self.save_persistent_cache();
+
+            if let Some(content) = self.get_codeowners_content() {
+                let diagnostics = self.compute_diagnostics(&content).await;
+                self.client
+                    .publish_diagnostics(uri, diagnostics, None)
+                    .await;
+            }
+        }
+    }
+
+    /// Reload config from TOML files and log the change
+    async fn reload_config(&self) {
+        let settings = self.load_config_files();
+        let settings_info = format!(
+            "Config reloaded: individual={:?}, team={:?}, validate_owners={}, diagnostics={} rules",
+            settings.individual,
+            settings.team,
+            settings.validate_owners,
+            settings.diagnostics.len()
+        );
+        *self.settings.write().unwrap() = settings;
+
+        self.client
+            .log_message(MessageType::INFO, settings_info)
+            .await;
+    }
+
+    /// Get CODEOWNERS content from open buffer or disk
+    fn get_codeowners_content(&self) -> Option<String> {
+        let codeowners_path = self.codeowners_path.read().unwrap();
+        let path = codeowners_path.as_ref()?;
+
+        // Try buffer first
+        if let Ok(url) = Url::from_file_path(path) {
+            let docs = self.open_documents.read().unwrap();
+            if let Some(text) = docs.get(&url) {
+                return Some(text.clone());
+            }
+        }
+
+        // Fall back to disk
+        fs::read_to_string(path).ok()
+    }
+
+    /// Collect all unique owners from CODEOWNERS file
+    fn collect_owners_from_codeowners(&self) -> Vec<String> {
+        let Some(content) = self.get_codeowners_content() else {
             return Vec::new();
         };
 
@@ -302,6 +461,25 @@ impl Backend {
             return Vec::new();
         }
 
+        // Skip LSP's own config files
+        let relative_path = {
+            let root = self.workspace_root.read().unwrap();
+            if let Some(root) = root.as_ref() {
+                uri.to_file_path().ok().and_then(|p| {
+                    p.strip_prefix(root)
+                        .ok()
+                        .map(|r| r.to_string_lossy().to_string())
+                })
+            } else {
+                None
+            }
+        };
+        if let Some(ref path) = relative_path {
+            if is_internally_ignored(path) {
+                return Vec::new();
+            }
+        }
+
         // Check if this diagnostic is enabled
         let config = {
             let settings = self.settings.read().unwrap();
@@ -364,17 +542,9 @@ impl Backend {
         params: &CodeActionParams,
     ) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
-        let codeowners_path = self.codeowners_path.read().unwrap().clone();
-        let path = match codeowners_path {
-            Some(p) => p,
-            None => return Ok(None),
+        let Some(content) = self.get_codeowners_content() else {
+            return Ok(None);
         };
-
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return Ok(None),
-        };
-
         let lines: Vec<&str> = content.lines().collect();
         let mut actions = Vec::new();
 
@@ -817,8 +987,8 @@ impl LanguageServer for Backend {
         );
         *self.settings.write().unwrap() = settings;
 
-        self.load_codeowners();
-        self.refresh_file_cache();
+        self.load_codeowners().await;
+        self.refresh_file_cache().await;
         self.load_persistent_cache();
 
         // Check if we should run background validation
@@ -944,6 +1114,42 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        // Register file watchers for config files and CODEOWNERS
+        let registrations = vec![Registration {
+            id: "file-watcher".to_string(),
+            method: "workspace/didChangeWatchedFiles".to_string(),
+            register_options: Some(
+                serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
+                    watchers: vec![
+                        // Config files
+                        FileSystemWatcher {
+                            glob_pattern: GlobPattern::String(format!("**/{}", CONFIG_FILE)),
+                            kind: Some(WatchKind::all()),
+                        },
+                        FileSystemWatcher {
+                            glob_pattern: GlobPattern::String(format!("**/{}", CONFIG_FILE_LOCAL)),
+                            kind: Some(WatchKind::all()),
+                        },
+                        // CODEOWNERS files (all common locations)
+                        FileSystemWatcher {
+                            glob_pattern: GlobPattern::String("**/CODEOWNERS".to_string()),
+                            kind: Some(WatchKind::all()),
+                        },
+                    ],
+                })
+                .unwrap(),
+            ),
+        }];
+
+        if let Err(e) = self.client.register_capability(registrations).await {
+            self.client
+                .log_message(
+                    MessageType::WARNING,
+                    format!("Failed to register config file watchers: {}", e),
+                )
+                .await;
+        }
+
         self.publish_codeowners_diagnostics().await;
     }
 
@@ -953,14 +1159,22 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = &params.text_document.uri;
+        let text = params.text_document.text;
+
+        // Track open document
+        self.open_documents
+            .write()
+            .unwrap()
+            .insert(uri.clone(), text.clone());
+
         if self.is_codeowners_file(uri) {
-            let diagnostics = self.compute_diagnostics(&params.text_document.text).await;
+            let diagnostics = self.compute_diagnostics(&text).await;
             self.client
                 .publish_diagnostics(uri.clone(), diagnostics, None)
                 .await;
         } else {
             // Check if file has no CODEOWNERS entry
-            let line_count = params.text_document.text.lines().count() as u32;
+            let line_count = text.lines().count() as u32;
             let diagnostics = self.check_file_not_owned(uri, line_count);
             if !diagnostics.is_empty() {
                 self.client
@@ -970,38 +1184,109 @@ impl LanguageServer for Backend {
         }
     }
 
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        let uri = &params.text_document.uri;
+        self.open_documents.write().unwrap().remove(uri);
+        // Clear diagnostics for closed file
+        self.client
+            .publish_diagnostics(uri.clone(), vec![], None)
+            .await;
+    }
+
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = &params.text_document.uri;
-        if self.is_codeowners_file(uri) {
-            if let Some(change) = params.content_changes.first() {
-                let diagnostics = self.compute_diagnostics(&change.text).await;
+        if let Some(change) = params.content_changes.first() {
+            // Update tracked content
+            self.open_documents
+                .write()
+                .unwrap()
+                .insert(uri.clone(), change.text.clone());
+
+            if self.is_codeowners_file(uri) {
+                // Parse CODEOWNERS from buffer content (handles unsaved changes)
+                self.load_codeowners_from_content(&change.text);
+
+                // Lightweight diagnostics for CODEOWNERS:
+                // - NO file cache (skip expensive pattern-no-match checks)
+                // - NO GitHub validation (done async below for uncached owners)
+                let diag_config = {
+                    let settings = self.settings.read().unwrap();
+                    settings.diagnostic_config()
+                };
+                let (diagnostics, owners_to_validate) =
+                    compute_diagnostics_sync(&change.text, None, &diag_config);
                 self.client
                     .publish_diagnostics(uri.clone(), diagnostics, None)
                     .await;
+
+                // Refresh file-not-owned diagnostics for other open files (cheap)
+                self.refresh_file_not_owned_diagnostics().await;
+
+                // Tell editor to refresh inlay hints (ownership may have changed)
+                let _ = self.client.inlay_hint_refresh().await;
+
+                // Spawn background validation for uncached owners
+                self.validate_owners_background(uri.clone(), owners_to_validate)
+                    .await;
             }
         }
-        // Note: We don't re-check file-not-owned on change since the file path doesn't change
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = &params.text_document.uri;
         if self.is_codeowners_file(uri) {
-            self.load_codeowners();
-            self.refresh_file_cache();
+            self.load_codeowners().await;
+            self.refresh_file_cache().await;
 
-            if let Some(text) = params.text {
-                let diagnostics = self.compute_diagnostics(&text).await;
-                self.client
-                    .publish_diagnostics(uri.clone(), diagnostics, None)
+            // Refresh diagnostics on ALL open files (file-not-owned may have changed)
+            self.refresh_all_open_documents().await;
+
+            // Tell editor to refresh inlay hints (ownership may have changed)
+            let _ = self.client.inlay_hint_refresh().await;
+
+            // Trigger background validation for any uncached owners
+            if let Some(content) = self.get_codeowners_content() {
+                let diag_config = {
+                    let settings = self.settings.read().unwrap();
+                    settings.diagnostic_config()
+                };
+                let (_, owners_to_validate) =
+                    compute_diagnostics_sync(&content, None, &diag_config);
+                self.validate_owners_background(uri.clone(), owners_to_validate)
                     .await;
-            } else {
-                self.publish_codeowners_diagnostics().await;
             }
         }
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        // Special handling for CODEOWNERS file - hover over @owners shows rich info
+        if self.is_codeowners_file(uri) {
+            if let Some(content) = self.get_codeowners_content() {
+                let lines: Vec<&str> = content.lines().collect();
+                let line_idx = position.line as usize;
+                if line_idx < lines.len() {
+                    let line = lines[line_idx];
+                    let char_idx = position.character as usize;
+
+                    // Find if we're hovering over an @owner
+                    if let Some(owner) = find_owner_at_position(line, char_idx) {
+                        let info = self.github_client.get_owner_info(&owner);
+                        let formatted = format_owner_hover(&owner, info.as_ref());
+                        return Ok(Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: formatted,
+                            }),
+                            range: None,
+                        }));
+                    }
+                }
+            }
+            return Ok(None);
+        }
 
         // Get relative path for rule lookup
         let relative_path = {
@@ -1049,12 +1334,19 @@ impl LanguageServer for Backend {
             None => "**Owned by nobody**".to_string(),
             Some(owners) => {
                 let owner_list: Vec<&str> = owners.split_whitespace().collect();
+
+                // Look up owner info from cache for rich hover
+                let format_with_cache = |owner: &str| -> String {
+                    let info = self.github_client.get_owner_info(owner);
+                    format_owner_with_info(owner, info.as_ref())
+                };
+
                 let owners_text = if owner_list.len() == 1 {
-                    format!("**Owner:** {}", format_owner_link(owner_list[0]))
+                    format!("**Owner:** {}", format_with_cache(owner_list[0]))
                 } else {
                     let list = owner_list
                         .iter()
-                        .map(|o| format!("- {}", format_owner_link(o)))
+                        .map(|o| format!("- {}", format_with_cache(o)))
                         .collect::<Vec<_>>()
                         .join("\n");
                     format!("**Owners:**\n{}", list)
@@ -1265,49 +1557,53 @@ impl LanguageServer for Backend {
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
+        let range = params.range;
 
         if self.is_codeowners_file(uri) {
-            let codeowners_path = self.codeowners_path.read().unwrap();
-            if let Some(path) = codeowners_path.as_ref() {
-                if let Ok(content) = fs::read_to_string(path) {
-                    let lines = parse_codeowners_file_with_positions(&content);
-                    let file_cache = self.file_cache.read().unwrap();
+            if let Some(content) = self.get_codeowners_content() {
+                let lines = parse_codeowners_file_with_positions(&content);
+                let file_cache = self.file_cache.read().unwrap();
 
-                    if let Some(ref cache) = *file_cache {
-                        let hints: Vec<InlayHint> = lines
-                            .iter()
-                            .filter_map(|line| {
-                                if let CodeownersLine::Rule { pattern, .. } = &line.content {
-                                    let count = cache.count_matches(pattern);
-                                    Some(InlayHint {
-                                        position: Position {
-                                            line: line.line_number,
-                                            character: line.pattern_end,
-                                        },
-                                        label: InlayHintLabel::String(format!(
-                                            " ({} {})",
-                                            count,
-                                            if count == 1 { "file" } else { "files" }
-                                        )),
-                                        kind: None,
-                                        text_edits: None,
-                                        tooltip: Some(InlayHintTooltip::String(format!(
-                                            "This pattern matches {} {} in the repository",
-                                            count,
-                                            if count == 1 { "file" } else { "files" }
-                                        ))),
-                                        padding_left: Some(true),
-                                        padding_right: Some(false),
-                                        data: None,
-                                    })
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
+                if let Some(ref cache) = *file_cache {
+                    let hints: Vec<InlayHint> = lines
+                        .iter()
+                        // Only compute hints for visible range
+                        .filter(|line| {
+                            line.line_number >= range.start.line
+                                && line.line_number <= range.end.line
+                        })
+                        .filter_map(|line| {
+                            if let CodeownersLine::Rule { pattern, .. } = &line.content {
+                                // Compute and cache count (blocking, but only for visible ~50 lines)
+                                let count = cache.count_matches(pattern);
+                                Some(InlayHint {
+                                    position: Position {
+                                        line: line.line_number,
+                                        character: line.pattern_end,
+                                    },
+                                    label: InlayHintLabel::String(format!(
+                                        " ({} {})",
+                                        count,
+                                        if count == 1 { "file" } else { "files" }
+                                    )),
+                                    kind: None,
+                                    text_edits: None,
+                                    tooltip: Some(InlayHintTooltip::String(format!(
+                                        "This pattern matches {} {} in the repository",
+                                        count,
+                                        if count == 1 { "file" } else { "files" }
+                                    ))),
+                                    padding_left: Some(true),
+                                    padding_right: Some(false),
+                                    data: None,
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
 
-                        return Ok(Some(hints));
-                    }
+                    return Ok(Some(hints));
                 }
             }
             return Ok(None);
@@ -1339,10 +1635,27 @@ impl LanguageServer for Backend {
         }]))
     }
 
-    async fn did_change_watched_files(&self, _params: DidChangeWatchedFilesParams) {
-        self.load_codeowners();
-        self.refresh_file_cache();
-        self.publish_codeowners_diagnostics().await;
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let mut config_changed = false;
+
+        for change in &params.changes {
+            if let Ok(path) = change.uri.to_file_path() {
+                if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
+                    if filename == CONFIG_FILE || filename == CONFIG_FILE_LOCAL {
+                        config_changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if config_changed {
+            self.reload_config().await;
+        }
+
+        self.load_codeowners().await;
+        self.refresh_file_cache().await;
+        self.refresh_all_open_documents().await;
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
@@ -1352,8 +1665,9 @@ impl LanguageServer for Backend {
             settings.merge(json_settings);
         }
         *self.settings.write().unwrap() = settings;
-        self.load_codeowners();
-        self.refresh_file_cache();
+        self.load_codeowners().await;
+        self.refresh_file_cache().await;
+        self.refresh_all_open_documents().await;
     }
 
     async fn execute_command(
@@ -1416,8 +1730,8 @@ impl LanguageServer for Backend {
 
         match result {
             Ok(()) => {
-                self.load_codeowners();
-                self.refresh_file_cache();
+                self.load_codeowners().await;
+                self.refresh_file_cache().await;
                 self.publish_codeowners_diagnostics().await;
                 self.client
                     .show_message(
@@ -1443,16 +1757,19 @@ impl LanguageServer for Backend {
 
         let position = params.text_document_position.position;
 
-        let codeowners_path = self.codeowners_path.read().unwrap();
-        let path = match codeowners_path.as_ref() {
-            Some(p) => p.clone(),
-            None => return Ok(None),
-        };
-        drop(codeowners_path);
-
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return Ok(None),
+        // Use buffer content if available (for unsaved changes), else read from disk
+        let content = {
+            let docs = self.open_documents.read().unwrap();
+            if let Some(text) = docs.get(uri) {
+                text.clone()
+            } else {
+                drop(docs);
+                let codeowners_path = self.codeowners_path.read().unwrap();
+                match codeowners_path.as_ref() {
+                    Some(p) => fs::read_to_string(p).unwrap_or_default(),
+                    None => return Ok(None),
+                }
+            }
         };
 
         let lines: Vec<&str> = content.lines().collect();
@@ -1471,61 +1788,87 @@ impl LanguageServer for Backend {
         let last_space = text_before_cursor.rfind(' ').map(|i| i + 1).unwrap_or(0);
         let current_word = &text_before_cursor[last_space..];
 
+        // Range to replace (from start of current word to cursor)
+        let replace_range = Range {
+            start: Position {
+                line: position.line,
+                character: last_space as u32,
+            },
+            end: Position {
+                line: position.line,
+                character: col as u32,
+            },
+        };
+
         let mut items = Vec::new();
 
-        // Path completions
-        if current_word.starts_with('/') || last_space == 0 {
+        // Helper to create completion item with text_edit
+        let make_completion =
+            |label: String, kind: CompletionItemKind, detail: String| -> CompletionItem {
+                CompletionItem {
+                    label: label.clone(),
+                    kind: Some(kind),
+                    detail: Some(detail),
+                    // text_edit replaces the current word with the completion
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range: replace_range,
+                        new_text: label,
+                    })),
+                    ..Default::default()
+                }
+            };
+
+        // Path completions - trigger on start of line or when typing a path
+        // Valid patterns: /src/, src/, ./src/, *.rs, etc.
+        let is_path_context = last_space == 0
+            || current_word.starts_with('/')
+            || current_word.starts_with('.')
+            || current_word.contains('/');
+
+        if is_path_context {
             let file_cache = self.file_cache.read().unwrap();
             if let Some(ref cache) = *file_cache {
-                let prefix = if current_word.starts_with('/') {
-                    current_word
-                } else {
-                    ""
-                };
+                // Use the current word as prefix for completion
+                let prefix = current_word;
                 let paths = cache.complete_path(prefix);
                 for path in paths {
                     let is_dir = path.ends_with('/');
-                    items.push(CompletionItem {
-                        label: path.clone(),
-                        kind: Some(if is_dir {
+                    items.push(make_completion(
+                        path,
+                        if is_dir {
                             CompletionItemKind::FOLDER
                         } else {
                             CompletionItemKind::FILE
-                        }),
-                        detail: Some(if is_dir {
+                        },
+                        if is_dir {
                             "Directory".to_string()
                         } else {
                             "File".to_string()
-                        }),
-                        ..Default::default()
-                    });
+                        },
+                    ));
                 }
 
                 if prefix.is_empty() || "*".starts_with(prefix) {
-                    items.push(CompletionItem {
-                        label: "*".to_string(),
-                        kind: Some(CompletionItemKind::SNIPPET),
-                        detail: Some("Match all files".to_string()),
-                        ..Default::default()
-                    });
-                    items.push(CompletionItem {
-                        label: "*.rs".to_string(),
-                        kind: Some(CompletionItemKind::SNIPPET),
-                        detail: Some("Match Rust files".to_string()),
-                        ..Default::default()
-                    });
-                    items.push(CompletionItem {
-                        label: "*.ts".to_string(),
-                        kind: Some(CompletionItemKind::SNIPPET),
-                        detail: Some("Match TypeScript files".to_string()),
-                        ..Default::default()
-                    });
-                    items.push(CompletionItem {
-                        label: "*.js".to_string(),
-                        kind: Some(CompletionItemKind::SNIPPET),
-                        detail: Some("Match JavaScript files".to_string()),
-                        ..Default::default()
-                    });
+                    items.push(make_completion(
+                        "*".to_string(),
+                        CompletionItemKind::SNIPPET,
+                        "Match all files".to_string(),
+                    ));
+                    items.push(make_completion(
+                        "*.rs".to_string(),
+                        CompletionItemKind::SNIPPET,
+                        "Match Rust files".to_string(),
+                    ));
+                    items.push(make_completion(
+                        "*.ts".to_string(),
+                        CompletionItemKind::SNIPPET,
+                        "Match TypeScript files".to_string(),
+                    ));
+                    items.push(make_completion(
+                        "*.js".to_string(),
+                        CompletionItemKind::SNIPPET,
+                        "Match JavaScript files".to_string(),
+                    ));
                 }
             }
         }
@@ -1539,23 +1882,21 @@ impl LanguageServer for Backend {
 
             if let Some(ref ind) = individual {
                 if ind.starts_with(current_word) {
-                    items.push(CompletionItem {
-                        label: ind.clone(),
-                        kind: Some(CompletionItemKind::CONSTANT),
-                        detail: Some("Configured individual".to_string()),
-                        ..Default::default()
-                    });
+                    items.push(make_completion(
+                        ind.clone(),
+                        CompletionItemKind::CONSTANT,
+                        "Configured individual".to_string(),
+                    ));
                 }
             }
 
             if let Some(ref t) = team {
                 if t.starts_with(current_word) {
-                    items.push(CompletionItem {
-                        label: t.clone(),
-                        kind: Some(CompletionItemKind::CLASS),
-                        detail: Some("Configured team".to_string()),
-                        ..Default::default()
-                    });
+                    items.push(make_completion(
+                        t.clone(),
+                        CompletionItemKind::CLASS,
+                        "Configured team".to_string(),
+                    ));
                 }
             }
 
@@ -1563,16 +1904,15 @@ impl LanguageServer for Backend {
             let mut seen_owners: HashSet<String> = HashSet::new();
             for owner in self.github_client.get_cached_owners() {
                 if owner.starts_with(current_word) && seen_owners.insert(owner.clone()) {
-                    items.push(CompletionItem {
-                        label: owner.clone(),
-                        kind: Some(if owner.contains('/') {
+                    items.push(make_completion(
+                        owner.clone(),
+                        if owner.contains('/') {
                             CompletionItemKind::CLASS
                         } else {
                             CompletionItemKind::CONSTANT
-                        }),
-                        detail: Some("Validated on GitHub".to_string()),
-                        ..Default::default()
-                    });
+                        },
+                        "Validated on GitHub".to_string(),
+                    ));
                 }
             }
 
@@ -1582,16 +1922,15 @@ impl LanguageServer for Backend {
                 if let CodeownersLine::Rule { owners, .. } = &line.content {
                     for owner in owners {
                         if owner.starts_with(current_word) && seen_owners.insert(owner.clone()) {
-                            items.push(CompletionItem {
-                                label: owner.clone(),
-                                kind: Some(if owner.contains('/') {
+                            items.push(make_completion(
+                                owner.clone(),
+                                if owner.contains('/') {
                                     CompletionItemKind::CLASS
                                 } else {
                                     CompletionItemKind::CONSTANT
-                                }),
-                                detail: Some("Used in this file".to_string()),
-                                ..Default::default()
-                            });
+                                },
+                                "Used in this file".to_string(),
+                            ));
                         }
                     }
                 }
@@ -1612,16 +1951,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
 
-        let codeowners_path = self.codeowners_path.read().unwrap();
-        let path = match codeowners_path.as_ref() {
-            Some(p) => p.clone(),
-            None => return Ok(None),
-        };
-        drop(codeowners_path);
-
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return Ok(None),
+        let Some(content) = self.get_codeowners_content() else {
+            return Ok(None);
         };
 
         let formatted = format_codeowners(&content);
@@ -1649,6 +1980,137 @@ impl LanguageServer for Backend {
     }
 }
 
+/// Find the @owner at a given character position in a line
+fn find_owner_at_position(line: &str, char_idx: usize) -> Option<String> {
+    // Skip comments
+    if line.trim_start().starts_with('#') {
+        return None;
+    }
+
+    // Find all potential owners in the line
+    let mut owners: Vec<(usize, usize, String)> = Vec::new();
+    let mut i = 0;
+    let chars: Vec<char> = line.chars().collect();
+
+    while i < chars.len() {
+        if chars[i] == '@' {
+            let start = i;
+            i += 1;
+            // Collect owner chars (alphanumeric, -, _, /)
+            while i < chars.len()
+                && (chars[i].is_alphanumeric()
+                    || chars[i] == '-'
+                    || chars[i] == '_'
+                    || chars[i] == '/')
+            {
+                i += 1;
+            }
+            if i > start + 1 {
+                let owner: String = chars[start..i].iter().collect();
+                owners.push((start, i, owner));
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    // Find which owner the cursor is on
+    for (start, end, owner) in owners {
+        if char_idx >= start && char_idx < end {
+            return Some(owner);
+        }
+    }
+
+    None
+}
+
+/// Format rich hover content for an owner in CODEOWNERS file
+fn format_owner_hover(owner: &str, info: Option<&github::OwnerInfo>) -> String {
+    match info {
+        Some(github::OwnerInfo::User(user)) => {
+            let mut lines = Vec::new();
+
+            // Avatar + header (some editors render images in hover, invisible if not)
+            if let Some(ref avatar) = user.avatar_url {
+                lines.push(format!(
+                    "![]({}&s=64) [`{}`]({})",
+                    avatar, owner, user.html_url
+                ));
+            } else {
+                lines.push(format!("[`{}`]({})", owner, user.html_url));
+            }
+
+            if let Some(ref name) = user.name {
+                lines.push(format!("**{}**", name));
+            }
+
+            if let Some(ref company) = user.company {
+                lines.push(format!("📍 {}", company));
+            }
+
+            if let Some(ref bio) = user.bio {
+                lines.push(String::new());
+                lines.push(format!("*{}*", bio));
+            }
+
+            lines.join("\n")
+        }
+        Some(github::OwnerInfo::Team(team)) => {
+            let mut lines = vec![format!("## [`{}`]({})", owner, team.html_url)];
+
+            if team.name != team.slug {
+                lines.push(format!("**{}**", team.name));
+            }
+
+            let mut stats = Vec::new();
+            if let Some(members) = team.members_count {
+                stats.push(format!("👥 {} members", members));
+            }
+            if let Some(repos) = team.repos_count {
+                stats.push(format!("📁 {} repos", repos));
+            }
+            if !stats.is_empty() {
+                lines.push(stats.join(" · "));
+            }
+
+            if let Some(ref desc) = team.description {
+                if !desc.is_empty() {
+                    lines.push(String::new());
+                    lines.push(format!("*{}*", desc));
+                }
+            }
+
+            lines.join("\n")
+        }
+        Some(github::OwnerInfo::Invalid) => {
+            format!("## {}\n\n⚠️ **Owner not found on GitHub**", owner)
+        }
+        Some(github::OwnerInfo::Unknown) | None => {
+            // Build basic link even without cached info
+            let url = if let Some(username) = owner.strip_prefix('@') {
+                if username.contains('/') {
+                    let parts: Vec<&str> = username.splitn(2, '/').collect();
+                    if parts.len() == 2 {
+                        format!("https://github.com/orgs/{}/teams/{}", parts[0], parts[1])
+                    } else {
+                        format!("https://github.com/{}", username)
+                    }
+                } else {
+                    format!("https://github.com/{}", username)
+                }
+            } else {
+                String::new()
+            };
+
+            if url.is_empty() {
+                format!("## {}", owner)
+            } else {
+                format!("## [`{}`]({})\n\n*Not validated yet*", owner, url)
+            }
+        }
+    }
+}
+
 /// Format an owner as a clickable GitHub link (LSP-specific, uses markdown)
 fn format_owner_link(owner: &str) -> String {
     if let Some(user) = owner.strip_prefix('@') {
@@ -1669,6 +2131,74 @@ fn format_owner_link(owner: &str) -> String {
         return format!("`{}`", owner);
     }
     format!("`{}`", owner)
+}
+
+/// Format an owner with rich metadata if available
+fn format_owner_with_info(owner: &str, info: Option<&github::OwnerInfo>) -> String {
+    match info {
+        Some(github::OwnerInfo::User(user)) => {
+            let mut parts = vec![format!("[`{}`]({})", owner, user.html_url)];
+
+            // Add display name if different from login
+            if let Some(ref name) = user.name {
+                if name != &user.login {
+                    parts.push(format!("*{}*", name));
+                }
+            }
+
+            // Add company
+            if let Some(ref company) = user.company {
+                parts.push(format!("📍 {}", company));
+            }
+
+            // Add bio (truncated)
+            if let Some(ref bio) = user.bio {
+                let truncated = if bio.len() > 60 {
+                    format!("{}...", &bio[..60])
+                } else {
+                    bio.clone()
+                };
+                parts.push(format!("*\"{}\"*", truncated));
+            }
+
+            parts.join(" — ")
+        }
+        Some(github::OwnerInfo::Team(team)) => {
+            let mut parts = vec![format!("[`{}`]({})", owner, team.html_url)];
+
+            // Add team display name if different from slug
+            if team.name != team.slug {
+                parts.push(format!("*{}*", team.name));
+            }
+
+            // Add member/repo count if available
+            let mut stats = Vec::new();
+            if let Some(members) = team.members_count {
+                stats.push(format!("{} members", members));
+            }
+            if let Some(repos) = team.repos_count {
+                stats.push(format!("{} repos", repos));
+            }
+            if !stats.is_empty() {
+                parts.push(format!("({})", stats.join(", ")));
+            }
+
+            // Add description (truncated)
+            if let Some(ref desc) = team.description {
+                if !desc.is_empty() {
+                    let truncated = if desc.len() > 60 {
+                        format!("{}...", &desc[..60])
+                    } else {
+                        desc.clone()
+                    };
+                    parts.push(format!("*\"{}\"*", truncated));
+                }
+            }
+
+            parts.join(" — ")
+        }
+        _ => format_owner_link(owner),
+    }
 }
 
 #[tokio::main]
