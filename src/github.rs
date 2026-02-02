@@ -40,6 +40,13 @@ impl PersistentCache {
     pub fn save(&self, workspace_root: &Path) -> std::io::Result<()> {
         let cache_dir = workspace_root.join(".codeowners-lsp");
         fs::create_dir_all(&cache_dir)?;
+
+        // Create .gitignore if it doesn't exist
+        let gitignore_path = cache_dir.join(".gitignore");
+        if !gitignore_path.exists() {
+            fs::write(&gitignore_path, "*\n")?;
+        }
+
         let cache_path = cache_dir.join("cache.json");
         let content = serde_json::to_string_pretty(self)?;
         fs::write(cache_path, content)
