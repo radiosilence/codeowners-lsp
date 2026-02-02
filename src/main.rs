@@ -9,7 +9,7 @@ mod validation;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use codeowners::Owners;
 use serde::Deserialize;
@@ -19,7 +19,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use diagnostics::{compute_diagnostics_sync, DiagnosticConfig};
 use file_cache::FileCache;
-use github::GitHubClient;
+use github::{GitHubClient, PersistentCache};
 use ownership::{apply_safe_fixes, check_file_ownership};
 use parser::{
     find_insertion_point_with_owner, format_codeowners, parse_codeowners_file,
@@ -82,7 +82,7 @@ struct Backend {
     codeowners_path: RwLock<Option<PathBuf>>,
     settings: RwLock<Settings>,
     file_cache: RwLock<Option<FileCache>>,
-    github_client: GitHubClient,
+    github_client: Arc<GitHubClient>,
 }
 
 /// Config file names
@@ -98,7 +98,7 @@ impl Backend {
             codeowners_path: RwLock::new(None),
             settings: RwLock::new(Settings::default()),
             file_cache: RwLock::new(None),
-            github_client: GitHubClient::new(),
+            github_client: Arc::new(GitHubClient::new()),
         }
     }
 
@@ -177,6 +177,56 @@ impl Backend {
         if let Some(root) = root.as_ref() {
             *self.file_cache.write().unwrap() = Some(FileCache::new(root));
         }
+    }
+
+    /// Load persistent cache from disk and populate in-memory cache
+    fn load_persistent_cache(&self) {
+        let root = self.workspace_root.read().unwrap();
+        if let Some(root) = root.as_ref() {
+            let persistent = PersistentCache::load(root);
+            self.github_client.load_from_persistent(&persistent);
+        }
+    }
+
+    /// Save in-memory cache to disk
+    #[allow(dead_code)] // May be used later
+    fn save_persistent_cache(&self) {
+        let root = self.workspace_root.read().unwrap();
+        if let Some(root) = root.as_ref() {
+            let persistent = self.github_client.export_to_persistent();
+            let _ = persistent.save(root);
+        }
+    }
+
+    /// Collect all unique owners from CODEOWNERS file
+    fn collect_owners_from_codeowners(&self) -> Vec<String> {
+        let codeowners_path = self.codeowners_path.read().unwrap();
+        let Some(path) = codeowners_path.as_ref() else {
+            return Vec::new();
+        };
+
+        let Ok(content) = fs::read_to_string(path) else {
+            return Vec::new();
+        };
+
+        let lines = parse_codeowners_file_with_positions(&content);
+        let mut owners: HashSet<String> = HashSet::new();
+
+        for line in &lines {
+            if let CodeownersLine::Rule {
+                owners: line_owners,
+                ..
+            } = &line.content
+            {
+                for owner in line_owners {
+                    if owner.starts_with('@') {
+                        owners.insert(owner.clone());
+                    }
+                }
+            }
+        }
+
+        owners.into_iter().collect()
     }
 
     fn get_owners_for_file(&self, uri: &Url) -> Option<String> {
@@ -757,10 +807,100 @@ impl LanguageServer for Backend {
                 settings.merge(json_settings);
             }
         }
+        // Log loaded config for debugging
+        let settings_info = format!(
+            "Config loaded: individual={:?}, team={:?}, validate_owners={}, diagnostics={} rules",
+            settings.individual,
+            settings.team,
+            settings.validate_owners,
+            settings.diagnostics.len()
+        );
         *self.settings.write().unwrap() = settings;
 
         self.load_codeowners();
         self.refresh_file_cache();
+        self.load_persistent_cache();
+
+        // Check if we should run background validation
+        let (should_validate, token) = {
+            let settings = self.settings.read().unwrap();
+            (settings.validate_owners, self.get_github_token())
+        };
+
+        // Collect owners for validation
+        let owners_to_validate = self.collect_owners_from_codeowners();
+
+        // Log after init (client not ready during initialize, so spawn task)
+        let client = self.client.clone();
+        let codeowners_found = self.codeowners_path.read().unwrap().is_some();
+
+        // Background validation task
+        if let (true, Some(token)) = (should_validate && !owners_to_validate.is_empty(), token) {
+            let github_client = self.github_client.clone();
+            let workspace_root = self.workspace_root.read().unwrap().clone();
+            let client_clone = client.clone();
+
+            tokio::spawn(async move {
+                // Small delay to ensure client is ready
+                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+                client_clone
+                    .log_message(
+                        MessageType::INFO,
+                        format!(
+                            "Starting background validation of {} owners...",
+                            owners_to_validate.len()
+                        ),
+                    )
+                    .await;
+
+                // Validate in parallel (5 concurrent)
+                use futures::stream::{self, StreamExt};
+                let results: Vec<_> = stream::iter(owners_to_validate)
+                    .map(|owner| {
+                        let client = github_client.clone();
+                        let token = token.clone();
+                        async move {
+                            let result = client.validate_owner(&owner, &token).await;
+                            (owner, result)
+                        }
+                    })
+                    .buffer_unordered(5)
+                    .collect()
+                    .await;
+
+                let valid_count = results.iter().filter(|(_, r)| *r == Some(true)).count();
+                let invalid_count = results.iter().filter(|(_, r)| *r == Some(false)).count();
+
+                client_clone
+                    .log_message(
+                        MessageType::INFO,
+                        format!(
+                            "Background validation complete: {} valid, {} invalid",
+                            valid_count, invalid_count
+                        ),
+                    )
+                    .await;
+
+                // Save to persistent cache
+                if let Some(root) = workspace_root {
+                    let persistent = github_client.export_to_persistent();
+                    let _ = persistent.save(&root);
+                }
+            });
+        }
+
+        tokio::spawn(async move {
+            // Small delay to ensure client is ready
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            client.log_message(MessageType::INFO, settings_info).await;
+            client
+                .log_message(
+                    MessageType::INFO,
+                    format!("CODEOWNERS found: {}", codeowners_found),
+                )
+                .await;
+        });
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -1016,7 +1156,10 @@ impl LanguageServer for Backend {
             };
 
         let has_existing_owners = self.get_owners_for_file(uri).is_some();
-        let settings = self.settings.read().unwrap();
+        let (individual, team) = {
+            let settings = self.settings.read().unwrap();
+            (settings.individual.clone(), settings.team.clone())
+        };
 
         let mut actions = Vec::new();
 
@@ -1048,32 +1191,32 @@ impl LanguageServer for Backend {
         let file_pattern = format!("/{}", relative_path);
 
         if has_existing_owners {
-            if let Some(ref individual) = settings.individual {
+            if let Some(ref ind) = individual {
                 actions.push(make_action(
-                    format!("Add {} to existing CODEOWNERS entry", individual),
+                    format!("Add {} to existing CODEOWNERS entry", ind),
                     "codeowners.addToExisting.individual",
                     &file_pattern,
-                    Some(individual),
+                    Some(ind),
                 ));
                 actions.push(make_action(
-                    format!("Take ownership as {} (new specific entry)", individual),
+                    format!("Take ownership as {} (new specific entry)", ind),
                     "codeowners.takeOwnership.individual",
                     &file_pattern,
-                    Some(individual),
+                    Some(ind),
                 ));
             }
-            if let Some(ref team) = settings.team {
+            if let Some(ref t) = team {
                 actions.push(make_action(
-                    format!("Add {} to existing CODEOWNERS entry", team),
+                    format!("Add {} to existing CODEOWNERS entry", t),
                     "codeowners.addToExisting.team",
                     &file_pattern,
-                    Some(team),
+                    Some(t),
                 ));
                 actions.push(make_action(
-                    format!("Take ownership as {} (new specific entry)", team),
+                    format!("Take ownership as {} (new specific entry)", t),
                     "codeowners.takeOwnership.team",
                     &file_pattern,
-                    Some(team),
+                    Some(t),
                 ));
             }
             actions.push(make_action(
@@ -1089,20 +1232,20 @@ impl LanguageServer for Backend {
                 None,
             ));
         } else {
-            if let Some(ref individual) = settings.individual {
+            if let Some(ref ind) = individual {
                 actions.push(make_action(
-                    format!("Take ownership as {}", individual),
+                    format!("Take ownership as {}", ind),
                     "codeowners.takeOwnership.individual",
                     &file_pattern,
-                    Some(individual),
+                    Some(ind),
                 ));
             }
-            if let Some(ref team) = settings.team {
+            if let Some(ref t) = team {
                 actions.push(make_action(
-                    format!("Take ownership as {}", team),
+                    format!("Take ownership as {}", t),
                     "codeowners.takeOwnership.team",
                     &file_pattern,
-                    Some(team),
+                    Some(t),
                 ));
             }
             actions.push(make_action(
@@ -1389,12 +1532,15 @@ impl LanguageServer for Backend {
 
         // Owner completions
         if current_word.starts_with('@') {
-            let settings = self.settings.read().unwrap();
+            let (individual, team) = {
+                let settings = self.settings.read().unwrap();
+                (settings.individual.clone(), settings.team.clone())
+            };
 
-            if let Some(ref individual) = settings.individual {
-                if individual.starts_with(current_word) {
+            if let Some(ref ind) = individual {
+                if ind.starts_with(current_word) {
                     items.push(CompletionItem {
-                        label: individual.clone(),
+                        label: ind.clone(),
                         kind: Some(CompletionItemKind::CONSTANT),
                         detail: Some("Configured individual".to_string()),
                         ..Default::default()
@@ -1402,10 +1548,10 @@ impl LanguageServer for Backend {
                 }
             }
 
-            if let Some(ref team) = settings.team {
-                if team.starts_with(current_word) {
+            if let Some(ref t) = team {
+                if t.starts_with(current_word) {
                     items.push(CompletionItem {
-                        label: team.clone(),
+                        label: t.clone(),
                         kind: Some(CompletionItemKind::CLASS),
                         detail: Some("Configured team".to_string()),
                         ..Default::default()
@@ -1413,9 +1559,25 @@ impl LanguageServer for Backend {
                 }
             }
 
-            let parsed = parse_codeowners_file_with_positions(&content);
+            // Add validated owners from GitHub cache
             let mut seen_owners: HashSet<String> = HashSet::new();
+            for owner in self.github_client.get_cached_owners() {
+                if owner.starts_with(current_word) && seen_owners.insert(owner.clone()) {
+                    items.push(CompletionItem {
+                        label: owner.clone(),
+                        kind: Some(if owner.contains('/') {
+                            CompletionItemKind::CLASS
+                        } else {
+                            CompletionItemKind::CONSTANT
+                        }),
+                        detail: Some("Validated on GitHub".to_string()),
+                        ..Default::default()
+                    });
+                }
+            }
 
+            // Add owners from current file
+            let parsed = parse_codeowners_file_with_positions(&content);
             for line in &parsed {
                 if let CodeownersLine::Rule { owners, .. } = &line.content {
                     for owner in owners {

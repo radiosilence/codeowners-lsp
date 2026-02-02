@@ -1,11 +1,68 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::sync::RwLock;
 
-/// Cache for GitHub owner validation results
+use serde::{Deserialize, Serialize};
+
+/// In-memory cache for GitHub owner validation results
 #[derive(Default)]
 pub struct GitHubCache {
     /// Map from owner string to validation result (true = valid, false = invalid)
     pub validated: HashMap<String, bool>,
+}
+
+/// Persistent cache stored in .codeowners-lsp/cache.json
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct PersistentCache {
+    /// Validated owners: owner -> valid (true/false)
+    #[serde(default)]
+    pub owners: HashMap<String, bool>,
+    /// Timestamp of last validation (Unix seconds)
+    #[serde(default)]
+    pub last_updated: u64,
+}
+
+impl PersistentCache {
+    /// Load cache from disk
+    #[allow(dead_code)] // Used by LSP only
+    pub fn load(workspace_root: &Path) -> Self {
+        let cache_path = workspace_root.join(".codeowners-lsp").join("cache.json");
+        if let Ok(content) = fs::read_to_string(&cache_path) {
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            Self::default()
+        }
+    }
+
+    /// Save cache to disk
+    #[allow(dead_code)] // Used by LSP only
+    pub fn save(&self, workspace_root: &Path) -> std::io::Result<()> {
+        let cache_dir = workspace_root.join(".codeowners-lsp");
+        fs::create_dir_all(&cache_dir)?;
+        let cache_path = cache_dir.join("cache.json");
+        let content = serde_json::to_string_pretty(self)?;
+        fs::write(cache_path, content)
+    }
+
+    /// Check if cache is stale (older than 1 hour)
+    #[allow(dead_code)] // May be used later
+    pub fn is_stale(&self) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        now - self.last_updated > 3600 // 1 hour
+    }
+
+    /// Update timestamp
+    #[allow(dead_code)] // Used by LSP only
+    pub fn touch(&mut self) {
+        self.last_updated = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+    }
 }
 
 /// GitHub API client for validating owners
@@ -20,6 +77,39 @@ impl GitHubClient {
             http_client: reqwest::Client::new(),
             cache: RwLock::new(GitHubCache::default()),
         }
+    }
+
+    /// Load validation results from persistent cache
+    #[allow(dead_code)] // Used by LSP only
+    pub fn load_from_persistent(&self, persistent: &PersistentCache) {
+        let mut cache = self.cache.write().unwrap();
+        for (owner, valid) in &persistent.owners {
+            cache.validated.insert(owner.clone(), *valid);
+        }
+    }
+
+    /// Export validation results to persistent cache
+    #[allow(dead_code)] // Used by LSP only
+    pub fn export_to_persistent(&self) -> PersistentCache {
+        let cache = self.cache.read().unwrap();
+        let mut persistent = PersistentCache {
+            owners: cache.validated.clone(),
+            ..Default::default()
+        };
+        persistent.touch();
+        persistent
+    }
+
+    /// Get all cached owners (for autocomplete)
+    #[allow(dead_code)] // Used by LSP only
+    pub fn get_cached_owners(&self) -> Vec<String> {
+        let cache = self.cache.read().unwrap();
+        cache
+            .validated
+            .iter()
+            .filter(|(_, valid)| **valid)
+            .map(|(owner, _)| owner.clone())
+            .collect()
     }
 
     /// Validate a GitHub user exists
