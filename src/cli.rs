@@ -68,6 +68,9 @@ enum Commands {
         /// Read files to check from stdin (one per line)
         #[arg(long)]
         stdin: bool,
+        /// Show unowned files as a directory tree with per-directory counts
+        #[arg(long)]
+        tree: bool,
     },
     /// Generate shell completions
     Completions {
@@ -143,7 +146,8 @@ async fn main() -> ExitCode {
             files,
             files_from,
             stdin,
-        } => commands::coverage(files, files_from, stdin),
+            tree,
+        } => commands::coverage(files, files_from, stdin, tree),
         Commands::Completions { shell } => {
             generate(
                 shell,

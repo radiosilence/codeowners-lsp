@@ -1240,6 +1240,15 @@ impl LanguageServer for Backend {
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = &params.text_document.uri;
+
+        // Update open_documents with saved text if provided (ensures sync)
+        if let Some(text) = &params.text {
+            self.open_documents
+                .write()
+                .unwrap()
+                .insert(uri.clone(), text.clone());
+        }
+
         if self.is_codeowners_file(uri) {
             self.load_codeowners().await;
             self.refresh_file_cache().await;
@@ -1487,21 +1496,44 @@ impl LanguageServer for Backend {
 
         let file_path = match uri.to_file_path() {
             Ok(p) => p,
-            Err(_) => return Ok(None),
+            Err(_) => {
+                self.client
+                    .log_message(MessageType::LOG, "code_action: uri.to_file_path() failed")
+                    .await;
+                return Ok(None);
+            }
         };
 
-        let root = self.workspace_root.read().unwrap();
-        let root = match root.as_ref() {
-            Some(r) => r.clone(),
-            None => return Ok(None),
+        let root = {
+            let guard = self.workspace_root.read().unwrap();
+            guard.as_ref().cloned()
         };
-        drop(root);
+        let root = match root {
+            Some(r) => r,
+            None => {
+                self.client
+                    .log_message(MessageType::LOG, "code_action: no workspace root")
+                    .await;
+                return Ok(None);
+            }
+        };
 
-        let relative_path =
-            match file_path.strip_prefix(self.workspace_root.read().unwrap().as_ref().unwrap()) {
-                Ok(p) => p.to_string_lossy().to_string(),
-                Err(_) => return Ok(None),
-            };
+        let relative_path = match file_path.strip_prefix(&root) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => {
+                self.client
+                    .log_message(
+                        MessageType::LOG,
+                        format!(
+                            "code_action: file {} outside workspace {}",
+                            file_path.display(),
+                            root.display()
+                        ),
+                    )
+                    .await;
+                return Ok(None);
+            }
+        };
 
         let has_existing_owners = self.get_owners_for_file(uri).is_some();
         let (individual, team) = {

@@ -16,6 +16,7 @@ codeowners-cli check src/main.rs
 
 # Show coverage stats (exits non-zero if uncovered files exist)
 codeowners-cli coverage
+codeowners-cli coverage --tree            # Show unowned files as directory tree
 
 # Check coverage for specific files (useful for CI on PRs)
 codeowners-cli coverage --files src/new_file.rs src/other.rs

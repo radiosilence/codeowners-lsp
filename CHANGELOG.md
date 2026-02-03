@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.12.4] - 2026-02-03
+
+### Added
+
+- **`coverage --tree`** - Show unowned files as a directory tree with per-directory counts:
+  ```
+  src/                         3 files
+  ├── handlers/                2 files
+  │   ├── navigation.rs
+  │   └── semantic.rs
+  └── main.rs
+  ```
+
+### Fixed
+
+- **LSP syncs document content on save** - Fixes diagnostics showing stale positions when external tools (formatters, linters) modify files on save
+
+### Changed
+
+- **Coverage summary moved to end** - Stats and progress bar now appear after the file list, not before
+
 ## [0.12.3] - 2026-02-03
 
 ### Fixed

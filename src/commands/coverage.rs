@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::{env, fs};
@@ -26,7 +27,105 @@ fn progress_bar(percentage: f64, width: usize) -> String {
     }
 }
 
-pub fn coverage(files: Option<Vec<String>>, files_from: Option<PathBuf>, stdin: bool) -> ExitCode {
+/// Tree node for directory structure
+#[derive(Default)]
+struct TreeNode {
+    files: Vec<String>,               // Files directly in this dir
+    dirs: BTreeMap<String, TreeNode>, // Subdirectories
+}
+
+impl TreeNode {
+    /// Insert a file path into the tree
+    fn insert(&mut self, path: &str) {
+        let parts: Vec<&str> = path.split('/').collect();
+        self.insert_parts(&parts);
+    }
+
+    fn insert_parts(&mut self, parts: &[&str]) {
+        match parts.len() {
+            0 => {}
+            1 => self.files.push(parts[0].to_string()),
+            _ => {
+                let dir = parts[0].to_string();
+                self.dirs.entry(dir).or_default().insert_parts(&parts[1..]);
+            }
+        }
+    }
+
+    /// Count total files in this node and all children
+    fn count(&self) -> usize {
+        self.files.len() + self.dirs.values().map(|d| d.count()).sum::<usize>()
+    }
+
+    /// Render the tree with box-drawing characters
+    fn render(&self, prefix: &str, _is_last: bool, is_root: bool) -> Vec<String> {
+        let mut lines = Vec::new();
+
+        let entries: Vec<_> = self
+            .dirs
+            .iter()
+            .map(|(name, node)| (name.clone(), true, Some(node)))
+            .chain(self.files.iter().map(|f| (f.clone(), false, None)))
+            .collect();
+
+        for (i, (name, is_dir, node)) in entries.iter().enumerate() {
+            let is_last_entry = i == entries.len() - 1;
+            let connector = if is_root {
+                ""
+            } else if is_last_entry {
+                "└── "
+            } else {
+                "├── "
+            };
+
+            if *is_dir {
+                let node = node.as_ref().unwrap();
+                let count = node.count();
+                let count_str = if count == 1 {
+                    format!("{} file", count)
+                } else {
+                    format!("{} files", count)
+                };
+                lines.push(format!(
+                    "{}{}{}/  {}",
+                    prefix,
+                    connector,
+                    name.yellow(),
+                    count_str.dimmed()
+                ));
+
+                let new_prefix = if is_root {
+                    prefix.to_string()
+                } else if is_last_entry {
+                    format!("{}    ", prefix)
+                } else {
+                    format!("{}│   ", prefix)
+                };
+                lines.extend(node.render(&new_prefix, is_last_entry, false));
+            } else {
+                lines.push(format!("{}{}{}", prefix, connector, name.red()));
+            }
+        }
+
+        lines
+    }
+}
+
+/// Build and render tree from unowned files
+fn render_tree(unowned: &[&str]) -> Vec<String> {
+    let mut root = TreeNode::default();
+    for file in unowned {
+        root.insert(file);
+    }
+    root.render("  ", true, true)
+}
+
+pub fn coverage(
+    files: Option<Vec<String>>,
+    files_from: Option<PathBuf>,
+    stdin: bool,
+    tree: bool,
+) -> ExitCode {
     let cwd = env::current_dir().expect("Failed to get current directory");
 
     let codeowners_path = match find_codeowners(&cwd) {
@@ -95,7 +194,24 @@ pub fn coverage(files: Option<Vec<String>>, files_from: Option<PathBuf>, stdin: 
         format!("{:.1}%", coverage_pct).red().bold()
     };
 
-    // Print header
+    // Print unowned files first (if any)
+    if !unowned.is_empty() {
+        println!();
+        println!("  {}:", "Unowned files".yellow().bold());
+        println!();
+
+        if tree {
+            for line in render_tree(&unowned) {
+                println!("{}", line);
+            }
+        } else {
+            for file in &unowned {
+                println!("    {} {}", "•".red(), file);
+            }
+        }
+    }
+
+    // Print summary at the end
     println!();
     println!(
         "  {} {}",
@@ -128,16 +244,57 @@ pub fn coverage(files: Option<Vec<String>>, files_from: Option<PathBuf>, stdin: 
     if unowned.is_empty() {
         println!();
         println!("  {} 🎉", "All files have owners!".green().bold());
-        println!();
+    }
+    println!();
+
+    if unowned.is_empty() {
         ExitCode::SUCCESS
     } else {
-        println!();
-        println!("  {}:", "Unowned files".yellow().bold());
-        println!();
-        for file in &unowned {
-            println!("    {} {}", "•".red(), file);
-        }
-        println!();
         ExitCode::from(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tree_node_count() {
+        let mut root = TreeNode::default();
+        root.insert("src/main.rs");
+        root.insert("src/lib.rs");
+        root.insert("src/commands/coverage.rs");
+        root.insert("README.md");
+
+        assert_eq!(root.count(), 4);
+        assert_eq!(root.dirs.get("src").unwrap().count(), 3);
+    }
+
+    #[test]
+    fn test_render_tree_structure() {
+        let files = vec![
+            "src/main.rs",
+            "src/handlers/symbols.rs",
+            "src/handlers/navigation.rs",
+            "config/settings.toml",
+        ];
+
+        let lines = render_tree(&files);
+
+        // Should have directory entries with counts
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("src/") && l.contains("3 files")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("handlers/") && l.contains("2 files")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("config/") && l.contains("1 file")));
+
+        // Should have file entries
+        assert!(lines.iter().any(|l| l.contains("main.rs")));
+        assert!(lines.iter().any(|l| l.contains("symbols.rs")));
+        assert!(lines.iter().any(|l| l.contains("settings.toml")));
     }
 }
