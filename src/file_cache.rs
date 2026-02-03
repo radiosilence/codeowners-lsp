@@ -9,6 +9,19 @@ use rayon::prelude::*;
 use crate::parser::{CodeownersLine, ParsedLine};
 use crate::pattern::{pattern_matches, CompiledPattern};
 
+/// Check if a path is internally ignored (gitignored files that shouldn't need owners)
+pub fn is_internally_ignored(path: &str) -> bool {
+    // Cache directory
+    if path.starts_with(".codeowners-lsp/") || path.contains("/.codeowners-lsp/") {
+        return true;
+    }
+    // Local config (user-specific, gitignored)
+    if path == ".codeowners-lsp.local.toml" || path.ends_with("/.codeowners-lsp.local.toml") {
+        return true;
+    }
+    false
+}
+
 /// Check if characters in needle appear in order in haystack (fuzzy match)
 fn fuzzy_match(haystack: &str, needle: &str) -> bool {
     let mut needle_chars = needle.chars().peekable();
@@ -23,34 +36,6 @@ fn fuzzy_match(haystack: &str, needle: &str) -> bool {
     }
 
     needle_chars.peek().is_none()
-}
-
-/// Files/patterns to ignore internally (LSP's own config, not subject to CODEOWNERS rules)
-pub const INTERNAL_IGNORE: &[&str] = &[
-    ".codeowners-lsp.toml",
-    ".codeowners-lsp.local.toml",
-    ".codeowners-lsp/",
-];
-
-/// Check if a path should be internally ignored
-pub fn is_internally_ignored(path: &str) -> bool {
-    for pattern in INTERNAL_IGNORE {
-        if pattern.ends_with('/') {
-            // Directory pattern
-            let dir_name = pattern.trim_end_matches('/');
-            if path.starts_with(&format!("{}/", dir_name))
-                || path.contains(&format!("/{}/", dir_name))
-            {
-                return true;
-            }
-        } else {
-            // File pattern
-            if path == *pattern || path.ends_with(&format!("/{}", pattern)) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// Cached list of files in the workspace with pattern match caching
