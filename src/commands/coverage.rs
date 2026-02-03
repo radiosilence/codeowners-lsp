@@ -183,7 +183,7 @@ mod tests {
         writeln!(temp, "src/foo.rs").unwrap();
         writeln!(temp, "src/bar.rs").unwrap();
         writeln!(temp, "  src/baz.rs  ").unwrap(); // with whitespace
-        writeln!(temp, "").unwrap(); // empty line
+        writeln!(temp).unwrap(); // empty line
         temp.flush().unwrap();
 
         let result = collect_files_to_check(None, Some(temp.path().to_path_buf()), false).unwrap();
