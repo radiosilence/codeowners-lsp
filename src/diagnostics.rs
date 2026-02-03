@@ -241,9 +241,11 @@ pub fn compute_diagnostics_sync(
                 }
             }
 
-            // Only check subsumption against patterns that could subsume (wildcards, dirs)
-            // Skip if already found as exact duplicate to avoid double-reporting
-            if !is_exact_duplicate {
+            // Only check subsumption if current pattern could subsume others
+            // (wildcards, directories, catch-alls) - skip exact file patterns for performance
+            let could_subsume = pattern.contains('*') || pattern.ends_with('/');
+
+            if could_subsume && !is_exact_duplicate {
                 if let Some(severity) =
                     config.get(codes::SHADOWED_RULE, DiagnosticSeverity::WARNING)
                 {

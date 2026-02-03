@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.10.2] - 2026-02-03
+
+### Fixed
+
+- **Performance: skip subsumption checks for non-subsuming patterns** - Only check shadowing when current pattern could actually subsume others (wildcards, directories), reducing O(n²) to O(n×m) where m is number of wildcards/directories
+
 ## [0.10.1] - 2026-02-03
 
 ### Fixed
