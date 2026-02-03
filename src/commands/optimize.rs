@@ -39,12 +39,7 @@ pub struct Optimization {
 pub enum OptimizationKind {
     /// Multiple files in same dir → directory pattern
     ConsolidateToDirectory,
-    /// Multiple patterns with same owner → combined pattern
-    #[allow(dead_code)] // Reserved for future use
-    CombinePatterns,
-    /// Pattern can use glob instead of listing
-    UseGlob,
-    /// Redundant rule (shadowed)
+    /// Redundant rule (shadowed by a later rule)
     RemoveRedundant,
 }
 
@@ -152,178 +147,193 @@ fn find_optimizations(
 ) -> Vec<Optimization> {
     let mut optimizations = Vec::new();
 
-    // 1. Find rules that could be consolidated into directory patterns
-    optimizations.extend(find_directory_consolidations(lines, file_cache, options));
-
-    // 2. Find patterns with same owner that could be combined
-    optimizations.extend(find_combinable_patterns(lines, file_cache));
-
-    // 3. Find redundant/shadowed rules
+    // 1. Find redundant/shadowed rules (most important - these are dead code)
     optimizations.extend(find_redundant_rules(lines));
+
+    // 2. Find directories where ALL children have same owners (safe consolidation)
+    optimizations.extend(find_directory_consolidations(lines, file_cache, options));
 
     optimizations
 }
 
-/// Find multiple file rules in the same directory with the same owner
+/// Find directories where ALL children have the exact same owners.
+///
+/// Only suggests consolidation when:
+/// 1. ALL files in a directory are explicitly listed with rules
+/// 2. ALL those rules have the EXACT same owners
+/// 3. There are at least `min_files_for_dir` files
+///
+/// The consolidated pattern is placed at the FIRST affected line position.
 #[allow(clippy::type_complexity)]
 fn find_directory_consolidations(
     lines: &[ParsedLine],
     file_cache: &FileCache,
     options: &OptimizeOptions,
 ) -> Vec<Optimization> {
+    use crate::pattern::pattern_matches;
+
     let mut optimizations = Vec::new();
 
-    // Group rules by (directory, owners)
-    let mut dir_rules: HashMap<(String, Vec<String>), Vec<(u32, String)>> = HashMap::new();
-
-    for line in lines {
-        if let CodeownersLine::Rule { pattern, owners } = &line.content {
-            // Skip patterns that are already directories or globs
-            if pattern.ends_with('/') || pattern.contains('*') {
-                continue;
+    // Collect all explicit file rules (not globs, not directories)
+    let file_rules: Vec<(u32, &str, &[String], bool)> = lines
+        .iter()
+        .filter_map(|line| {
+            if let CodeownersLine::Rule { pattern, owners } = &line.content {
+                // Skip patterns that are already directories or globs
+                if pattern.ends_with('/') || pattern.contains('*') {
+                    return None;
+                }
+                let anchored = pattern.starts_with('/');
+                Some((
+                    line.line_number,
+                    pattern.as_str(),
+                    owners.as_slice(),
+                    anchored,
+                ))
+            } else {
+                None
             }
+        })
+        .collect();
 
-            // Get the parent directory
-            let dir = Path::new(pattern.trim_start_matches('/'))
-                .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
+    // Group by parent directory
+    let mut dir_to_rules: HashMap<String, Vec<(u32, &str, &[String], bool)>> = HashMap::new();
 
-            if dir.is_empty() {
-                continue;
+    for (line_num, pattern, owners, anchored) in &file_rules {
+        let clean_pattern = pattern.trim_start_matches('/');
+        if let Some(parent) = Path::new(clean_pattern).parent() {
+            let dir = parent.to_string_lossy().to_string();
+            if !dir.is_empty() {
+                dir_to_rules
+                    .entry(dir)
+                    .or_default()
+                    .push((*line_num, *pattern, *owners, *anchored));
             }
-
-            let key = (dir, owners.clone());
-            dir_rules
-                .entry(key)
-                .or_default()
-                .push((line.line_number, pattern.clone()));
         }
     }
 
-    // Find directories with enough rules to consolidate
-    for ((dir, owners), rules) in dir_rules {
+    // Check each directory
+    for (dir, rules) in dir_to_rules {
         if rules.len() < options.min_files_for_dir {
             continue;
         }
 
-        // Check if ALL files in this directory are covered
-        let dir_pattern = format!("/{}/", dir);
-        let all_files_in_dir = file_cache.get_matches(&format!("/{}/*", dir));
-
-        // Count how many files in this dir are covered by the rules
-        let covered_files: Vec<_> = rules.iter().map(|(_, p)| p.clone()).collect();
-
-        // Only suggest if the rules cover most files in the directory
-        let coverage_ratio = covered_files.len() as f64 / all_files_in_dir.len().max(1) as f64;
-
-        if coverage_ratio >= 0.7 {
-            // 70% of files covered = suggest dir pattern
-            optimizations.push(Optimization {
-                kind: OptimizationKind::ConsolidateToDirectory,
-                affected_lines: rules.iter().map(|(l, _)| *l).collect(),
-                current_patterns: covered_files,
-                suggested_pattern: dir_pattern,
-                owners,
-                reason: format!(
-                    "Consolidate {} file rules into directory pattern ({:.0}% of dir covered)",
-                    rules.len(),
-                    coverage_ratio * 100.0
-                ),
-                files_covered: all_files_in_dir.len(),
-            });
-        }
-    }
-
-    optimizations
-}
-
-/// Find patterns with same owner that could use a common glob
-#[allow(clippy::type_complexity)]
-fn find_combinable_patterns(lines: &[ParsedLine], _file_cache: &FileCache) -> Vec<Optimization> {
-    let mut optimizations = Vec::new();
-
-    // Group by owner and extension
-    let mut ext_rules: HashMap<(Vec<String>, String), Vec<(u32, String)>> = HashMap::new();
-
-    for line in lines {
-        if let CodeownersLine::Rule { pattern, owners } = &line.content {
-            // Extract extension if it's a file pattern
-            if let Some(ext) = Path::new(pattern).extension() {
-                let ext = ext.to_string_lossy().to_string();
-                let key = (owners.clone(), ext);
-                ext_rules
-                    .entry(key)
-                    .or_default()
-                    .push((line.line_number, pattern.clone()));
-            }
-        }
-    }
-
-    // Find extensions with multiple rules
-    for ((owners, ext), rules) in ext_rules {
-        if rules.len() < 3 {
+        // Check if ALL rules have the same owners
+        let first_owners = rules[0].2;
+        let all_same_owners = rules
+            .iter()
+            .all(|(_, _, owners, _)| *owners == first_owners);
+        if !all_same_owners {
             continue;
         }
 
-        // Check if patterns are in same directory
-        let dirs: Vec<_> = rules
-            .iter()
-            .filter_map(|(_, p)| {
-                Path::new(p.trim_start_matches('/'))
-                    .parent()
-                    .map(|d| d.to_string_lossy().to_string())
-            })
-            .collect();
+        // Check if ALL files in directory are covered by these rules
+        // Use anchored pattern to get files at this exact directory level
+        let dir_glob = format!("/{}/*", dir);
+        let all_files_in_dir = file_cache.get_matches(&dir_glob);
 
-        // If all in same directory, suggest directory glob
-        if !dirs.is_empty() && dirs.iter().all(|d| d == &dirs[0]) {
-            let dir = &dirs[0];
-            optimizations.push(Optimization {
-                kind: OptimizationKind::UseGlob,
-                affected_lines: rules.iter().map(|(l, _)| *l).collect(),
-                current_patterns: rules.iter().map(|(_, p)| p.clone()).collect(),
-                suggested_pattern: format!("/{}/*.{}", dir, ext),
-                owners,
-                reason: format!(
-                    "Use glob pattern for {} .{} files in same directory",
-                    rules.len(),
-                    ext
-                ),
-                files_covered: rules.len(),
-            });
+        if all_files_in_dir.is_empty() {
+            continue;
         }
+
+        // Check each file is matched by exactly one of our rules
+        let rule_patterns: Vec<&str> = rules.iter().map(|(_, p, _, _)| *p).collect();
+        let all_covered = all_files_in_dir.iter().all(|file| {
+            rule_patterns
+                .iter()
+                .any(|pattern| pattern_matches(pattern, file))
+        });
+
+        if !all_covered {
+            continue;
+        }
+
+        // Check we're not covering MORE than just this directory's direct children
+        // (avoid over-consolidation)
+        if rules.len() != all_files_in_dir.len() {
+            continue;
+        }
+
+        // Preserve anchoring from the first pattern
+        let first_anchored = rules[0].3;
+        let suggested_pattern = if first_anchored {
+            format!("/{}/", dir)
+        } else {
+            format!("{}/", dir)
+        };
+
+        optimizations.push(Optimization {
+            kind: OptimizationKind::ConsolidateToDirectory,
+            affected_lines: rules.iter().map(|(l, _, _, _)| *l).collect(),
+            current_patterns: rules.iter().map(|(_, p, _, _)| p.to_string()).collect(),
+            suggested_pattern,
+            owners: first_owners.to_vec(),
+            reason: format!("All {} files in {} have same owners", rules.len(), dir),
+            files_covered: all_files_in_dir.len(),
+        });
     }
 
     optimizations
 }
 
 /// Find rules that are shadowed by later rules
+///
+/// A rule is "dead" if a later rule subsumes it (last match wins).
+/// Examples:
+/// - `docs/ @a` followed by `* @b` → docs/ is dead
+/// - `/src/auth/ @a` followed by `/src/ @b` → /src/auth/ is dead
+/// - Duplicate patterns: first occurrence is dead
 fn find_redundant_rules(lines: &[ParsedLine]) -> Vec<Optimization> {
+    use crate::pattern::pattern_subsumes;
+
     let mut optimizations = Vec::new();
-    let mut seen_patterns: HashMap<String, u32> = HashMap::new();
 
-    for line in lines {
-        if let CodeownersLine::Rule { pattern, owners } = &line.content {
-            let normalized = pattern.trim_start_matches('/').to_string();
+    // Collect all rules with their line numbers
+    let rules: Vec<(u32, &str, &[String])> = lines
+        .iter()
+        .filter_map(|line| {
+            if let CodeownersLine::Rule { pattern, owners } = &line.content {
+                Some((line.line_number, pattern.as_str(), owners.as_slice()))
+            } else {
+                None
+            }
+        })
+        .collect();
 
-            if let Some(&first_line) = seen_patterns.get(&normalized) {
+    // For each rule, check if any LATER rule subsumes it
+    for (i, (line_num, pattern, owners)) in rules.iter().enumerate() {
+        for (later_line_num, later_pattern, _) in rules.iter().skip(i + 1) {
+            if pattern_subsumes(pattern, later_pattern) {
+                let reason = if pattern.trim_start_matches('/')
+                    == later_pattern.trim_start_matches('/')
+                    && pattern.starts_with('/') == later_pattern.starts_with('/')
+                {
+                    format!(
+                        "Duplicate pattern - line {} shadows line {}",
+                        later_line_num + 1,
+                        line_num + 1
+                    )
+                } else {
+                    format!(
+                        "Pattern '{}' on line {} is shadowed by '{}' on line {}",
+                        pattern,
+                        line_num + 1,
+                        later_pattern,
+                        later_line_num + 1
+                    )
+                };
+
                 optimizations.push(Optimization {
                     kind: OptimizationKind::RemoveRedundant,
-                    affected_lines: vec![first_line],
-                    current_patterns: vec![pattern.clone()],
+                    affected_lines: vec![*line_num],
+                    current_patterns: vec![pattern.to_string()],
                     suggested_pattern: String::new(),
-                    owners: owners.clone(),
-                    reason: format!(
-                        "Duplicate pattern - line {} shadows line {}",
-                        line.line_number + 1,
-                        first_line + 1
-                    ),
+                    owners: owners.to_vec(),
+                    reason,
                     files_covered: 0,
                 });
+                break; // Only report first shadowing rule
             }
-
-            seen_patterns.insert(normalized, line.line_number);
         }
     }
 
@@ -341,9 +351,7 @@ fn output_human(optimizations: &[Optimization]) {
     for (i, opt) in optimizations.iter().enumerate() {
         let kind_str = match opt.kind {
             OptimizationKind::ConsolidateToDirectory => "📁 Directory consolidation",
-            OptimizationKind::CombinePatterns => "🔗 Combine patterns",
-            OptimizationKind::UseGlob => "✨ Use glob",
-            OptimizationKind::RemoveRedundant => "🗑️  Remove redundant",
+            OptimizationKind::RemoveRedundant => "🗑️  Remove shadowed rule",
         };
 
         println!("{}. {}", (i + 1).to_string().bold(), kind_str.cyan());
@@ -532,23 +540,23 @@ mod tests {
 
     #[test]
     fn test_apply_optimizations_multiple() {
-        let content = "a.rs @a\nb.rs @a\nc.rs @b\nd.rs @b\n";
+        let content = "src/a.rs @a\nsrc/b.rs @a\nlib/c.rs @b\nlib/d.rs @b\n";
 
         let opts = vec![
             Optimization {
-                kind: OptimizationKind::UseGlob,
+                kind: OptimizationKind::ConsolidateToDirectory,
                 affected_lines: vec![0, 1],
-                current_patterns: vec!["a.rs".to_string(), "b.rs".to_string()],
-                suggested_pattern: "*.rs".to_string(),
+                current_patterns: vec!["src/a.rs".to_string(), "src/b.rs".to_string()],
+                suggested_pattern: "src/".to_string(),
                 owners: vec!["@a".to_string()],
                 reason: "test".to_string(),
                 files_covered: 2,
             },
             Optimization {
-                kind: OptimizationKind::UseGlob,
+                kind: OptimizationKind::ConsolidateToDirectory,
                 affected_lines: vec![2, 3],
-                current_patterns: vec!["c.rs".to_string(), "d.rs".to_string()],
-                suggested_pattern: "*.rs".to_string(),
+                current_patterns: vec!["lib/c.rs".to_string(), "lib/d.rs".to_string()],
+                suggested_pattern: "lib/".to_string(),
                 owners: vec!["@b".to_string()],
                 reason: "test".to_string(),
                 files_covered: 2,
@@ -558,7 +566,7 @@ mod tests {
         let result = apply_optimizations(content, &[], &opts);
 
         // Each group replaced in place
-        assert_eq!(result, "*.rs @a\n*.rs @b\n");
+        assert_eq!(result, "src/ @a\nlib/ @b\n");
     }
 
     #[test]
@@ -742,15 +750,74 @@ mod tests {
     }
 
     #[test]
-    fn test_find_redundant_rules_normalized_pattern() {
-        // /src/foo and src/foo should be treated as duplicates
+    fn test_find_redundant_rules_anchored_not_same_as_unanchored() {
+        // /src/foo and src/foo are NOT the same pattern!
+        // /src/foo is anchored to root, src/foo (without trailing /) is also anchored
+        // but they have different semantics for directory patterns
         let lines = vec![
             make_parsed_line(0, "/src/foo", vec!["@first"]),
             make_parsed_line(1, "src/foo", vec!["@second"]),
         ];
 
+        // Both are exact path patterns (no trailing /), both anchored to root
+        // so src/foo subsumes /src/foo (identical after normalization)
         let result = find_redundant_rules(&lines);
         assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_find_redundant_rules_unanchored_dir_not_shadowed_by_anchored() {
+        // docs/ (unanchored) matches MORE than /docs/ (anchored)
+        // So /docs/ does NOT shadow docs/
+        let lines = vec![
+            make_parsed_line(0, "docs/", vec!["@team"]), // matches anywhere
+            make_parsed_line(1, "/docs/", vec!["@root"]), // only matches root
+        ];
+
+        let result = find_redundant_rules(&lines);
+        assert!(result.is_empty()); // docs/ is NOT shadowed
+    }
+
+    #[test]
+    fn test_find_redundant_rules_anchored_shadowed_by_unanchored() {
+        // /docs/ (anchored) IS shadowed by docs/ (unanchored)
+        // because docs/ matches everything /docs/ matches (and more)
+        let lines = vec![
+            make_parsed_line(0, "/docs/", vec!["@root"]), // only matches root
+            make_parsed_line(1, "docs/", vec!["@team"]),  // matches anywhere, including root
+        ];
+
+        let result = find_redundant_rules(&lines);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].affected_lines, vec![0]); // /docs/ is dead
+    }
+
+    #[test]
+    fn test_find_redundant_rules_shadowed_by_catchall() {
+        // Classic footgun: specific patterns before catch-all
+        let lines = vec![
+            make_parsed_line(0, "docs/", vec!["@docs"]),
+            make_parsed_line(1, "*.rs", vec!["@rust"]),
+            make_parsed_line(2, "*", vec!["@default"]),
+        ];
+
+        let result = find_redundant_rules(&lines);
+        assert_eq!(result.len(), 2); // Both docs/ and *.rs are shadowed by *
+        assert!(result.iter().any(|o| o.affected_lines == vec![0]));
+        assert!(result.iter().any(|o| o.affected_lines == vec![1]));
+    }
+
+    #[test]
+    fn test_find_redundant_rules_nested_dir_shadowed() {
+        // /src/auth/ is shadowed by /src/
+        let lines = vec![
+            make_parsed_line(0, "/src/auth/", vec!["@security"]),
+            make_parsed_line(1, "/src/", vec!["@backend"]),
+        ];
+
+        let result = find_redundant_rules(&lines);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].affected_lines, vec![0]);
     }
 
     #[test]
@@ -762,5 +829,18 @@ mod tests {
 
         let result = find_redundant_rules(&lines);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_find_redundant_rules_correct_order_not_redundant() {
+        // Correct order: general first, specific last
+        let lines = vec![
+            make_parsed_line(0, "*", vec!["@default"]),
+            make_parsed_line(1, "docs/", vec!["@docs"]),
+            make_parsed_line(2, "*.rs", vec!["@rust"]),
+        ];
+
+        let result = find_redundant_rules(&lines);
+        assert!(result.is_empty()); // Nothing is shadowed when ordered correctly
     }
 }

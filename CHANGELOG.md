@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.10.0] - 2026-02-03
+
+### Fixed - Critical Pattern Matching Overhaul
+
+Complete rewrite of pattern matching to conform to GitHub CODEOWNERS behavior:
+
+- **Anchored vs unanchored patterns** - Leading `/` now properly anchors to root
+  - `/docs/` only matches `docs/` at repository root
+  - `docs/` (no leading `/`) matches ANY `docs/` directory anywhere in the tree
+  - This was a major bug: `docs/` was incorrectly treated as anchored
+
+- **`/*` now correctly matches only root files** - Previously matched everything
+
+- **Catch-all behavior** - `*` and `**` now correctly match all files at any depth
+
+- **Directory pattern semantics**:
+  - `/docs/` = anchored, recursive (matches `docs/**`)
+  - `/docs/*` = anchored, direct children only (NOT subdirectories)
+  - `docs/` = unanchored, matches anywhere in tree
+
+### Changed - Optimize Command
+
+The `optimize` command now uses the corrected pattern engine:
+
+- **Detects shadowed rules using `pattern_subsumes`** - Properly detects when later rules shadow earlier ones based on "last match wins" semantics
+- **Catches common footguns**:
+  - `docs/ @team` followed by `* @default` → `docs/` is dead
+  - `/src/auth/ @security` followed by `/src/ @backend` → `/src/auth/` is dead
+  - Unanchored patterns are NOT shadowed by anchored equivalents
+
+- **Directory consolidation** - Only suggests when ALL files in directory have exact same owners
+
+- **Removed risky glob suggestions** - No longer suggests `*.rs` patterns that might match unintended files
+
+### Added - 51 new pattern conformance tests
+
+Comprehensive test suite covering all GitHub CODEOWNERS behaviors:
+- Catch-all patterns, extension patterns, anchored/unanchored directories
+- Single vs double star wildcards, case sensitivity
+- Dead rule detection scenarios, edge cases
+
 ## [0.9.1] - 2026-02-03
 
 ### Fixed

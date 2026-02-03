@@ -1,49 +1,95 @@
 /// Pre-processed pattern for fast matching
 pub enum CompiledPattern {
-    /// Matches everything (* or **)
+    /// Matches everything (unanchored * or **)
     MatchAll,
+    /// Anchored /* - matches only root-level files
+    RootFilesOnly,
     /// Single-segment glob like *.rs - needs **/ prefix for matching
     SingleSegmentGlob(String),
     /// Multi-segment glob like src/**/*.rs
     MultiSegmentGlob(String),
-    /// Directory pattern like src/ - matches prefix
-    Directory(String),
-    /// Exact path or directory prefix
+    /// Anchored directory pattern like /src/ - matches prefix at root only
+    AnchoredDirectory(String),
+    /// Unanchored directory pattern like docs/ - matches anywhere
+    UnanchoredDirectory(String),
+    /// Exact path or directory prefix (always anchored)
     Exact(String),
 }
 
 impl CompiledPattern {
     pub fn new(pattern: &str) -> Self {
+        let anchored = pattern.starts_with('/');
         let pattern = pattern.trim_start_matches('/');
 
+        // Catch-all patterns
         if pattern == "*" || pattern == "**" {
+            if anchored && pattern == "*" {
+                return CompiledPattern::RootFilesOnly;
+            }
             return CompiledPattern::MatchAll;
         }
 
+        // Patterns with wildcards
         if pattern.contains('*') {
-            if !pattern.contains('/') {
-                // Single segment like *.rs -> **/*.rs
+            // Unanchored single-segment like *.rs -> **/*.rs
+            if !anchored && !pattern.contains('/') {
                 return CompiledPattern::SingleSegmentGlob(format!("**/{}", pattern));
             }
             return CompiledPattern::MultiSegmentGlob(pattern.to_string());
         }
 
+        // Directory patterns (trailing /)
         if pattern.ends_with('/') {
-            return CompiledPattern::Directory(pattern.trim_end_matches('/').to_string());
+            let dir = pattern.trim_end_matches('/').to_string();
+            if anchored {
+                return CompiledPattern::AnchoredDirectory(dir);
+            } else {
+                return CompiledPattern::UnanchoredDirectory(dir);
+            }
         }
 
+        // Exact patterns (always anchored)
         CompiledPattern::Exact(pattern.to_string())
     }
 
     #[inline]
     pub fn matches(&self, path: &str) -> bool {
+        if path.is_empty() {
+            return false;
+        }
+
         match self {
             CompiledPattern::MatchAll => true,
+            CompiledPattern::RootFilesOnly => !path.contains('/'),
             CompiledPattern::SingleSegmentGlob(glob) => fast_glob::glob_match(glob, path),
             CompiledPattern::MultiSegmentGlob(glob) => fast_glob::glob_match(glob, path),
-            CompiledPattern::Directory(dir) => {
+            CompiledPattern::AnchoredDirectory(dir) => {
                 path.starts_with(dir.as_str())
                     && (path.len() == dir.len() || path.as_bytes().get(dir.len()) == Some(&b'/'))
+            }
+            CompiledPattern::UnanchoredDirectory(dir) => {
+                // Match at root
+                if path.starts_with(dir.as_str())
+                    && (path.len() == dir.len() || path.as_bytes().get(dir.len()) == Some(&b'/'))
+                {
+                    return true;
+                }
+                // Match anywhere: look for /dir/ in path
+                let search = format!("/{}/", dir);
+                if path.contains(&search) {
+                    return true;
+                }
+                // Match /dir at various positions
+                for (i, _) in path.match_indices('/') {
+                    let rest = &path[i + 1..];
+                    if rest.starts_with(dir.as_str())
+                        && (rest.len() == dir.len()
+                            || rest.as_bytes().get(dir.len()) == Some(&b'/'))
+                    {
+                        return true;
+                    }
+                }
+                false
             }
             CompiledPattern::Exact(exact) => {
                 path == exact
@@ -55,46 +101,125 @@ impl CompiledPattern {
 }
 
 /// Simple glob pattern matching for CODEOWNERS patterns
+///
+/// Key rules:
+/// - Leading `/` anchors pattern to repository root
+/// - No leading `/`:
+///   - If ends with `/`: directory pattern, matches anywhere in tree
+///   - If contains `/`: implicitly anchored to root
+///   - If no `/` and has `*`: matches at any depth (e.g., `*.rs`)
+///   - If no `/` and no `*`: anchored to root
+/// - `*` matches any characters except `/`
+/// - `**` matches zero or more directories
 #[inline]
 pub fn pattern_matches(pattern: &str, path: &str) -> bool {
+    // Empty path never matches (edge case)
+    if path.is_empty() {
+        return false;
+    }
+
+    // Check if pattern is anchored (has leading /)
+    let anchored = pattern.starts_with('/');
     let pattern = pattern.trim_start_matches('/');
 
-    // Handle ** (matches everything)
-    if pattern == "*" || pattern == "**" {
+    // Handle catch-all patterns (matches everything)
+    // Only unanchored * or ** are true catch-alls
+    if !anchored && (pattern == "*" || pattern == "**") {
         return true;
     }
 
-    // Handle complex patterns with * or ** - use fast-glob
+    // Handle patterns with wildcards
     if pattern.contains('*') {
-        // CODEOWNERS semantics: single-segment patterns like *.rs match in ANY directory
-        // Convert *.rs to **/*.rs for fast-glob
-        if !pattern.contains('/') {
+        // Anchored single-star only matches root level
+        // /* should only match files directly in root, not nested
+        if anchored && pattern == "*" {
+            // Match only if path has no directory separator
+            return !path.contains('/');
+        }
+
+        // Single-segment patterns like *.rs (unanchored) match at any depth
+        if !anchored && !pattern.contains('/') {
             let glob_pattern = format!("**/{}", pattern);
             return fast_glob::glob_match(&glob_pattern, path);
         }
+
+        // Multi-segment patterns or anchored patterns: match directly
         return fast_glob::glob_match(pattern, path);
     }
 
-    // Handle directory patterns like /dir/ or dir/
+    // Handle directory patterns (trailing /)
     if pattern.ends_with('/') {
         let dir = pattern.trim_end_matches('/');
-        return path.starts_with(dir)
-            && (path.len() == dir.len() || path[dir.len()..].starts_with('/'));
+
+        if anchored {
+            // /docs/ - only matches docs/ at root
+            return path.starts_with(dir)
+                && (path.len() == dir.len() || path.as_bytes().get(dir.len()) == Some(&b'/'));
+        } else {
+            // docs/ - matches any directory named "docs" anywhere
+            // Convert to **/docs/** pattern for matching
+            // Match if path contains /docs/ or starts with docs/
+            if path.starts_with(dir)
+                && (path.len() == dir.len() || path.as_bytes().get(dir.len()) == Some(&b'/'))
+            {
+                return true;
+            }
+            // Check for /dir/ anywhere in path
+            let search = format!("/{}/", dir);
+            if path.contains(&search) {
+                return true;
+            }
+            // Check for /dir at end followed by content
+            let search_prefix = format!("/{}/", dir);
+            for (i, _) in path.match_indices('/') {
+                if path[i..].starts_with(&search_prefix)
+                    || (path[i + 1..].starts_with(dir)
+                        && path
+                            .as_bytes()
+                            .get(i + 1 + dir.len())
+                            .is_some_and(|&b| b == b'/'))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
-    // Exact match or prefix match for directories
-    path == pattern || path.starts_with(&format!("{}/", pattern))
+    // Handle exact/prefix patterns (no wildcards, no trailing /)
+    // These are always anchored (either explicitly or implicitly)
+    path == pattern
+        || (path.starts_with(pattern) && path.as_bytes().get(pattern.len()) == Some(&b'/'))
 }
 
 /// Check if pattern `a` is subsumed by pattern `b` (i.e., everything `a` matches, `b` also matches).
 /// If true, and `b` comes after `a` in CODEOWNERS, then `a` is a dead rule.
+///
+/// Key anchoring rules:
+/// - Unanchored patterns (no leading `/`) match MORE files than anchored patterns
+/// - `/docs/` (anchored) IS subsumed by `docs/` (unanchored)
+/// - `docs/` (unanchored) is NOT subsumed by `/docs/` (anchored)
 #[inline]
 pub fn pattern_subsumes(a: &str, b: &str) -> bool {
+    // Track anchoring before stripping
+    let a_anchored = a.starts_with('/');
+    let b_anchored = b.starts_with('/');
+
     let a = a.trim_start_matches('/');
     let b = b.trim_start_matches('/');
 
-    // Identical patterns
-    if a == b {
+    // Identical patterns (both same anchoring and content)
+    if a == b && a_anchored == b_anchored {
+        return true;
+    }
+
+    // For exact paths (no wildcards, no trailing /), patterns containing /
+    // are implicitly anchored, so /src/foo and src/foo are equivalent
+    let a_is_exact = !a.contains('*') && !a.ends_with('/');
+    let b_is_exact = !b.contains('*') && !b.ends_with('/');
+    if a_is_exact && b_is_exact && a == b && a.contains('/') {
+        // Both are exact paths with /, one has leading / and one doesn't
+        // They match the same files, so b subsumes a
         return true;
     }
 
@@ -128,13 +253,31 @@ pub fn pattern_subsumes(a: &str, b: &str) -> bool {
     let a_is_dir = a.ends_with('/') || a.ends_with("/**") || a.ends_with("/*");
     let b_is_dir = b.ends_with('/') || b.ends_with("/**") || b.ends_with("/*");
 
-    // /src/lib/ subsumed by /src/ (more specific dir under more general)
+    // Handle anchored vs unanchored directory patterns
     if a_is_dir && b_is_dir {
+        // Unanchored pattern matches MORE files than anchored
+        // So: anchored IS subsumed by unanchored (if same path)
+        //     unanchored is NOT subsumed by anchored
+        if a_anchored && !b_anchored {
+            // /docs/ subsumed by docs/ - yes, if same or b is parent
+            return a_dir == b_dir || starts_with_dir(a_dir, b_dir);
+        }
+        if !a_anchored && b_anchored {
+            // docs/ subsumed by /docs/ - NO, unanchored matches nested paths
+            return false;
+        }
+        // Both same anchoring - normal rules
         return a_dir == b_dir || starts_with_dir(a_dir, b_dir);
     }
 
     // Exact file in directory: src/main.rs subsumed by src/ or src/**
     if b_is_dir && !a_is_dir {
+        // If b is unanchored, it matches more, so a could be subsumed
+        // If b is anchored and a is not a nested path, still works
+        if !a_anchored && b_anchored {
+            // Unanchored file path not subsumed by anchored dir
+            return false;
+        }
         return a == b_dir || starts_with_dir(a, b_dir);
     }
 
@@ -151,118 +294,223 @@ fn starts_with_dir(path: &str, dir: &str) -> bool {
 mod tests {
     use super::*;
 
+    // =============================================================================
+    // GITHUB CODEOWNERS CONFORMANCE TEST SUITE
+    // =============================================================================
+    // Based on official GitHub documentation and observed behavior.
+    // Reference: reports/compass_artifact_wf-*.md
+    //
+    // Key rules:
+    // 1. Last matching pattern wins (not most specific)
+    // 2. Leading `/` anchors pattern to repository root
+    // 3. No leading `/` = pattern can match anywhere in tree (for certain patterns)
+    // 4. Trailing `/` = directory pattern, matches recursively
+    // 5. `*` matches any characters EXCEPT `/` (doesn't cross directories)
+    // 6. `**` matches zero or more directories (crosses boundaries)
+    // 7. Patterns are case-sensitive
+    // 8. `[abc]` character ranges NOT supported (unlike gitignore)
+    // 9. `!` negation patterns NOT supported (unlike gitignore)
+    // =============================================================================
+
+    // ---------------------------------------------------------------------------
+    // CATEGORY 1: CATCH-ALL PATTERNS
+    // ---------------------------------------------------------------------------
+    // `*` and `**` at the root level match every file in the repository.
+
     #[test]
-    fn test_wildcard_all() {
-        assert!(pattern_matches("*", "any/file.rs"));
-        assert!(pattern_matches("**", "any/nested/file.rs"));
+    fn test_catchall_star() {
+        // * matches every file in the repository (not just root)
+        assert!(pattern_matches("*", "readme.md"));
+        assert!(pattern_matches("*", "src/main.rs"));
+        assert!(pattern_matches("*", "a/b/c/d/e/f.txt"));
+        assert!(pattern_matches("*", ".hidden"));
+        assert!(pattern_matches("*", "deep/nested/path/file.ext"));
     }
 
     #[test]
-    fn test_extension_pattern() {
+    fn test_catchall_double_star() {
+        // ** also matches everything
+        assert!(pattern_matches("**", "readme.md"));
+        assert!(pattern_matches("**", "src/main.rs"));
+        assert!(pattern_matches("**", "a/b/c/d/e/f.txt"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // CATEGORY 2: EXTENSION PATTERNS (no path separator)
+    // ---------------------------------------------------------------------------
+    // Patterns like `*.rs` without any `/` match files at ANY depth.
+    // This is CODEOWNERS-specific behavior.
+
+    #[test]
+    fn test_extension_matches_any_depth() {
+        // *.rs matches .rs files at any depth
+        assert!(pattern_matches("*.rs", "main.rs"));
         assert!(pattern_matches("*.rs", "src/main.rs"));
-        assert!(pattern_matches("*.rs", "lib.rs"));
+        assert!(pattern_matches("*.rs", "src/lib/mod.rs"));
+        assert!(pattern_matches("*.rs", "a/b/c/d/file.rs"));
+    }
+
+    #[test]
+    fn test_extension_no_match_wrong_ext() {
+        assert!(!pattern_matches("*.rs", "main.go"));
         assert!(!pattern_matches("*.rs", "src/main.go"));
         assert!(!pattern_matches("*.rs", "readme.md"));
+        assert!(!pattern_matches("*.rs", "file.rs.bak")); // .rs.bak != .rs
     }
 
     #[test]
-    fn test_directory_pattern_trailing_slash() {
-        assert!(pattern_matches("/src/", "src/main.rs"));
-        assert!(pattern_matches("/src/", "src/lib/mod.rs"));
-        assert!(pattern_matches("src/", "src/main.rs"));
-        assert!(!pattern_matches("/src/", "other/file.rs"));
+    fn test_extension_complex() {
+        // *.config.js should match config.js files
+        assert!(pattern_matches("*.config.js", "webpack.config.js"));
+        assert!(pattern_matches("*.config.js", "src/babel.config.js"));
+        assert!(!pattern_matches("*.config.js", "config.js")); // no prefix before .config.js
+    }
+
+    // ---------------------------------------------------------------------------
+    // CATEGORY 3: ANCHORED DIRECTORY PATTERNS (leading `/`, trailing `/`)
+    // ---------------------------------------------------------------------------
+    // `/docs/` = directory at root, matches ALL contents recursively
+
+    #[test]
+    fn test_anchored_dir_matches_recursively() {
+        // /docs/ matches docs/* and docs/**/* at root only
+        assert!(pattern_matches("/docs/", "docs/readme.md"));
+        assert!(pattern_matches("/docs/", "docs/api/index.md"));
+        assert!(pattern_matches("/docs/", "docs/a/b/c/deep.txt"));
     }
 
     #[test]
-    fn test_directory_pattern_glob() {
-        assert!(pattern_matches("/src/**", "src/main.rs"));
-        assert!(pattern_matches("/src/**", "src/nested/deep/file.rs"));
-        assert!(pattern_matches("/src/*", "src/main.rs"));
-        assert!(!pattern_matches("/src/**", "other/file.rs"));
+    fn test_anchored_dir_no_match_elsewhere() {
+        // /docs/ does NOT match docs/ nested elsewhere
+        assert!(!pattern_matches("/docs/", "src/docs/file.txt"));
+        assert!(!pattern_matches("/docs/", "other/docs/readme.md"));
+        assert!(!pattern_matches("/docs/", "a/b/docs/c.txt"));
     }
 
     #[test]
-    fn test_exact_match() {
-        assert!(pattern_matches("Makefile", "Makefile"));
+    fn test_anchored_dir_no_match_partial_name() {
+        // /docs/ should not match /documentation/
+        assert!(!pattern_matches("/docs/", "documentation/readme.md"));
+        assert!(!pattern_matches("/docs/", "docs-old/readme.md"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // CATEGORY 4: UNANCHORED DIRECTORY PATTERNS (no leading `/`, trailing `/`)
+    // ---------------------------------------------------------------------------
+    // `docs/` (no leading slash) = matches ANY directory named `docs` ANYWHERE
+
+    #[test]
+    fn test_unanchored_dir_matches_at_root() {
+        assert!(pattern_matches("docs/", "docs/readme.md"));
+        assert!(pattern_matches("docs/", "docs/api/index.md"));
+    }
+
+    #[test]
+    fn test_unanchored_dir_matches_nested() {
+        // This is the critical difference from anchored patterns
+        assert!(pattern_matches("docs/", "src/docs/file.txt"));
+        assert!(pattern_matches("docs/", "a/b/docs/deep.txt"));
+        assert!(pattern_matches("docs/", "project/src/docs/api/v1/spec.md"));
+    }
+
+    #[test]
+    fn test_unanchored_dir_no_match_partial_name() {
+        // Must be exact directory name
+        assert!(!pattern_matches("docs/", "documentation/readme.md"));
+        assert!(!pattern_matches("docs/", "mydocs/readme.md"));
+        assert!(!pattern_matches("docs/", "src/mydocs/file.txt"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // CATEGORY 5: ANCHORED PATH PATTERNS (leading `/`, no wildcards)
+    // ---------------------------------------------------------------------------
+    // `/src/main.rs` = exact file at root
+    // `/src` = file or directory named `src` at root
+
+    #[test]
+    fn test_anchored_exact_file() {
         assert!(pattern_matches("/Makefile", "Makefile"));
-        assert!(!pattern_matches("Makefile", "other/Makefile"));
-    }
-
-    #[test]
-    fn test_directory_prefix() {
-        assert!(pattern_matches("src", "src/main.rs"));
-        assert!(pattern_matches("src", "src/nested/file.rs"));
-        assert!(!pattern_matches("src", "other/src/file.rs"));
-    }
-
-    #[test]
-    fn test_leading_slash_stripped() {
         assert!(pattern_matches("/src/main.rs", "src/main.rs"));
+        assert!(!pattern_matches("/Makefile", "build/Makefile"));
+        assert!(!pattern_matches("/src/main.rs", "other/src/main.rs"));
+    }
+
+    #[test]
+    fn test_anchored_name_as_directory() {
+        // /docs (no trailing slash) matches file or directory named docs at root
+        assert!(pattern_matches("/docs", "docs")); // exact file match
+        assert!(pattern_matches("/docs", "docs/anything")); // as directory prefix
+        assert!(pattern_matches("/docs", "docs/nested/deep.txt"));
+        assert!(!pattern_matches("/docs", "src/docs"));
+        assert!(!pattern_matches("/docs", "src/docs/file.txt"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // CATEGORY 6: SINGLE-SEGMENT UNANCHORED PATTERNS (no `/` at all)
+    // ---------------------------------------------------------------------------
+    // `Makefile` (no slashes) - behavior depends on interpretation
+    // In gitignore: matches anywhere. In CODEOWNERS: typically anchored.
+
+    #[test]
+    fn test_single_segment_exact() {
+        // Single segment without slashes - anchored to root
+        assert!(pattern_matches("Makefile", "Makefile"));
+        assert!(pattern_matches("README.md", "README.md"));
+    }
+
+    #[test]
+    fn test_single_segment_as_directory() {
+        // Single segment can also act as directory prefix
+        assert!(pattern_matches("src", "src/main.rs"));
+        assert!(pattern_matches("src", "src/lib/mod.rs"));
+    }
+
+    #[test]
+    fn test_single_segment_no_match_nested() {
+        // Should NOT match same name nested elsewhere (anchored behavior)
+        assert!(!pattern_matches("Makefile", "build/Makefile"));
+        assert!(!pattern_matches("src", "project/src/file.rs"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // CATEGORY 7: MULTI-SEGMENT UNANCHORED PATTERNS (has `/`, no leading `/`)
+    // ---------------------------------------------------------------------------
+    // `src/main.rs` (contains `/` but no leading `/`) - implicitly anchored
+
+    #[test]
+    fn test_multi_segment_implicitly_anchored() {
         assert!(pattern_matches("src/main.rs", "src/main.rs"));
+        assert!(pattern_matches("src/lib/mod.rs", "src/lib/mod.rs"));
+        // Should NOT match nested (implicitly anchored)
+        assert!(!pattern_matches("src/main.rs", "project/src/main.rs"));
     }
 
-    #[test]
-    fn test_nested_directory() {
-        assert!(pattern_matches("src/lib/", "src/lib/mod.rs"));
-        assert!(pattern_matches("/src/lib/", "src/lib/nested.rs"));
-        assert!(!pattern_matches("src/lib/", "src/other/file.rs"));
-    }
+    // ---------------------------------------------------------------------------
+    // CATEGORY 8: SINGLE STAR PATTERNS (`*` - doesn't cross directories)
+    // ---------------------------------------------------------------------------
+    // `*` matches any character EXCEPT `/`
 
     #[test]
-    fn test_double_star_prefix() {
-        // **/foo.txt matches foo.txt in any directory
-        assert!(pattern_matches(
-            "**/mirrord_config.json",
-            "src/mirrord_config.json"
-        ));
-        assert!(pattern_matches(
-            "**/mirrord_config.json",
-            "mirrord_config.json"
-        ));
-        assert!(pattern_matches(
-            "**/mirrord_config.json",
-            "a/b/c/mirrord_config.json"
-        ));
-        assert!(!pattern_matches("**/mirrord_config.json", "src/other.json"));
-
-        // Leading slash variant
-        assert!(pattern_matches(
-            "/**/mirrord_config.json",
-            "src/mirrord_config.json"
-        ));
-        assert!(pattern_matches("/**/foo.txt", "foo.txt"));
-        assert!(pattern_matches("/**/foo.txt", "dir/foo.txt"));
-    }
-
-    #[test]
-    fn test_double_star_middle() {
-        // src/**/test.rs matches src/test.rs, src/foo/test.rs, etc.
-        assert!(pattern_matches("src/**/test.rs", "src/test.rs"));
-        assert!(pattern_matches("src/**/test.rs", "src/foo/test.rs"));
-        assert!(pattern_matches("src/**/test.rs", "src/foo/bar/test.rs"));
-        assert!(!pattern_matches("src/**/test.rs", "other/test.rs"));
-        assert!(!pattern_matches("src/**/test.rs", "src/foo/other.rs"));
-    }
-
-    #[test]
-    fn test_single_star_in_path() {
-        // deployment/*/deploy matches deployment/foo/deploy
-        assert!(pattern_matches(
-            "deployment/*/deploy/apps/staging/Chart.yaml",
-            "deployment/analytics/deploy/apps/staging/Chart.yaml"
-        ));
-        assert!(pattern_matches(
-            "deployment/*/deploy/**",
-            "deployment/foo/deploy/bar/baz.yaml"
-        ));
-        assert!(!pattern_matches(
-            "deployment/*/deploy/**",
-            "other/foo/deploy/bar.yaml"
-        ));
+    fn test_star_direct_children_only() {
+        // /docs/* matches only direct children of docs
+        assert!(pattern_matches("/docs/*", "docs/readme.md"));
+        assert!(pattern_matches("/docs/*", "docs/index.html"));
+        // Does NOT match nested paths
+        assert!(!pattern_matches("/docs/*", "docs/api/index.md"));
+        assert!(!pattern_matches("/docs/*", "docs/a/b/file.txt"));
     }
 
     #[test]
     fn test_star_in_filename() {
+        // Pattern with * in filename portion
+        assert!(pattern_matches("docs/*.md", "docs/readme.md"));
+        assert!(pattern_matches("docs/*.md", "docs/CHANGELOG.md"));
+        assert!(!pattern_matches("docs/*.md", "docs/readme.txt"));
+        assert!(!pattern_matches("docs/*.md", "docs/api/readme.md")); // nested
+    }
+
+    #[test]
+    fn test_star_prefix_suffix() {
         // *crowdin* matches files with crowdin in the name
         assert!(pattern_matches(
             ".github/workflows/*crowdin*",
@@ -270,42 +518,208 @@ mod tests {
         ));
         assert!(pattern_matches(
             ".github/workflows/*crowdin*",
-            ".github/workflows/upload-crowdin-files.yaml"
+            ".github/workflows/upload-crowdin.yaml"
         ));
         assert!(!pattern_matches(
             ".github/workflows/*crowdin*",
             ".github/workflows/deploy.yaml"
         ));
-
-        // create_service*.ex
-        assert!(pattern_matches(
-            "src/apps/platform_rpc/lib/platform_rpc/grpc/action/create_service*.ex",
-            "src/apps/platform_rpc/lib/platform_rpc/grpc/action/create_service_foo.ex"
-        ));
-        assert!(pattern_matches(
-            "lib/create_service*.ex",
-            "lib/create_service_provider.ex"
-        ));
     }
 
     #[test]
-    fn test_star_prefix_suffix() {
-        // appointment_review* matches appointment_review.ex, appointment_review_test.ex
+    fn test_star_middle_of_path() {
+        // deployment/*/config.yaml - single directory wildcard
         assert!(pattern_matches(
-            "src/apps/platform/lib/schemas/appointment_review*",
-            "src/apps/platform/lib/schemas/appointment_review.ex"
+            "deployment/*/config.yaml",
+            "deployment/prod/config.yaml"
         ));
         assert!(pattern_matches(
-            "src/apps/platform/lib/schemas/appointment_review*",
-            "src/apps/platform/lib/schemas/appointment_review_test.ex"
+            "deployment/*/config.yaml",
+            "deployment/staging/config.yaml"
         ));
+        // Does not match nested
         assert!(!pattern_matches(
-            "src/apps/platform/lib/schemas/appointment_review*",
-            "src/apps/platform/lib/schemas/other.ex"
+            "deployment/*/config.yaml",
+            "deployment/env/prod/config.yaml"
         ));
     }
 
-    // Subsumption tests
+    // ---------------------------------------------------------------------------
+    // CATEGORY 9: DOUBLE STAR PATTERNS (`**` - crosses directories)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_double_star_leading() {
+        // **/file.txt matches file.txt at any depth
+        assert!(pattern_matches("**/config.json", "config.json"));
+        assert!(pattern_matches("**/config.json", "src/config.json"));
+        assert!(pattern_matches("**/config.json", "a/b/c/config.json"));
+        assert!(!pattern_matches("**/config.json", "src/other.json"));
+    }
+
+    #[test]
+    fn test_double_star_trailing() {
+        // docs/** matches everything inside docs recursively
+        assert!(pattern_matches("docs/**", "docs/readme.md"));
+        assert!(pattern_matches("docs/**", "docs/api/index.md"));
+        assert!(pattern_matches("docs/**", "docs/a/b/c/deep.txt"));
+        assert!(!pattern_matches("docs/**", "other/readme.md"));
+    }
+
+    #[test]
+    fn test_double_star_middle() {
+        // a/**/b matches a/b, a/x/b, a/x/y/b
+        assert!(pattern_matches("a/**/b", "a/b"));
+        assert!(pattern_matches("a/**/b", "a/x/b"));
+        assert!(pattern_matches("a/**/b", "a/x/y/b"));
+        assert!(pattern_matches("a/**/b", "a/x/y/z/b"));
+        assert!(!pattern_matches("a/**/b", "a/x/y/c"));
+        assert!(!pattern_matches("a/**/b", "x/a/b")); // anchored
+    }
+
+    #[test]
+    fn test_double_star_with_extension() {
+        // docs/**/*.md matches all .md files under docs
+        assert!(pattern_matches("docs/**/*.md", "docs/readme.md"));
+        assert!(pattern_matches("docs/**/*.md", "docs/api/spec.md"));
+        assert!(pattern_matches("docs/**/*.md", "docs/a/b/c/guide.md"));
+        assert!(!pattern_matches("docs/**/*.md", "docs/readme.txt"));
+        assert!(!pattern_matches("docs/**/*.md", "src/readme.md"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // CATEGORY 10: CASE SENSITIVITY
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_case_sensitive_exact() {
+        assert!(pattern_matches("/Docs/", "Docs/readme.md"));
+        assert!(!pattern_matches("/Docs/", "docs/readme.md"));
+        assert!(!pattern_matches("/docs/", "Docs/readme.md"));
+    }
+
+    #[test]
+    fn test_case_sensitive_extension() {
+        assert!(pattern_matches("*.RS", "main.RS"));
+        assert!(!pattern_matches("*.RS", "main.rs"));
+        assert!(!pattern_matches("*.rs", "main.RS"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // CATEGORY 11: UNSUPPORTED FEATURES (should be treated literally or ignored)
+    // ---------------------------------------------------------------------------
+    // Unlike gitignore, CODEOWNERS does NOT support:
+    // - `[abc]` character ranges
+    // - `!pattern` negation
+
+    #[test]
+    fn test_character_range_not_supported() {
+        // [abc] should be treated literally, not as character class
+        // A file literally named "[abc].txt" would match
+        // But "a.txt", "b.txt", "c.txt" should NOT match
+        assert!(!pattern_matches("[abc].txt", "a.txt"));
+        assert!(!pattern_matches("[abc].txt", "b.txt"));
+        assert!(!pattern_matches("[abc].txt", "c.txt"));
+        // Note: matching "[abc].txt" literally is tricky due to glob libs
+    }
+
+    #[test]
+    fn test_negation_not_supported() {
+        // !pattern should NOT work as negation
+        // It should either fail to match or be treated literally
+        // The key is it shouldn't "un-match" files
+        // (Hard to test directly, but we verify it doesn't crash or behave unexpectedly)
+        assert!(!pattern_matches("!docs/", "docs/readme.md"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // CATEGORY 12: COMPOSITE TABLE TEST (from GitHub docs)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_github_docs_table() {
+        // From the report:
+        // | Pattern      | `/docs/readme.md` | `/docs/api/index.md` | `/src/docs/file.txt` |
+        // |--------------|-------------------|----------------------|----------------------|
+        // | `/docs/`     | ✓                 | ✓                    | ✗                    |
+        // | `/docs/*`    | ✓                 | ✗                    | ✗                    |
+        // | `/docs/**`   | ✓                 | ✓                    | ✗                    |
+        // | `docs/`      | ✓                 | ✓                    | ✓                    |
+        // | `**/docs/**` | ✓                 | ✓                    | ✓                    |
+
+        // /docs/ - anchored, recursive
+        assert!(pattern_matches("/docs/", "docs/readme.md"));
+        assert!(pattern_matches("/docs/", "docs/api/index.md"));
+        assert!(!pattern_matches("/docs/", "src/docs/file.txt"));
+
+        // /docs/* - anchored, direct children only
+        assert!(pattern_matches("/docs/*", "docs/readme.md"));
+        assert!(!pattern_matches("/docs/*", "docs/api/index.md"));
+        assert!(!pattern_matches("/docs/*", "src/docs/file.txt"));
+
+        // /docs/** - anchored, recursive via **
+        assert!(pattern_matches("/docs/**", "docs/readme.md"));
+        assert!(pattern_matches("/docs/**", "docs/api/index.md"));
+        assert!(!pattern_matches("/docs/**", "src/docs/file.txt"));
+
+        // docs/ - unanchored, matches anywhere
+        assert!(pattern_matches("docs/", "docs/readme.md"));
+        assert!(pattern_matches("docs/", "docs/api/index.md"));
+        assert!(pattern_matches("docs/", "src/docs/file.txt"));
+
+        // **/docs/** - explicit anywhere match
+        assert!(pattern_matches("**/docs/**", "docs/readme.md"));
+        assert!(pattern_matches("**/docs/**", "docs/api/index.md"));
+        assert!(pattern_matches("**/docs/**", "src/docs/file.txt"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // CATEGORY 13: EDGE CASES
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_root_files_only() {
+        // /* should match only files at root, not nested
+        assert!(pattern_matches("/*", "readme.md"));
+        assert!(pattern_matches("/*", "Makefile"));
+        // Should NOT match nested files
+        assert!(!pattern_matches("/*", "src/main.rs"));
+        assert!(!pattern_matches("/*", "docs/readme.md"));
+    }
+
+    #[test]
+    fn test_hidden_files() {
+        // Patterns should match hidden files (starting with .)
+        assert!(pattern_matches("*", ".gitignore"));
+        assert!(pattern_matches(".*", ".gitignore"));
+        assert!(pattern_matches(".github/", ".github/workflows/ci.yml"));
+    }
+
+    #[test]
+    fn test_deeply_nested() {
+        let deep = "a/b/c/d/e/f/g/h/i/j/k/file.txt";
+        assert!(pattern_matches("*", deep));
+        assert!(pattern_matches("**", deep));
+        assert!(pattern_matches("a/", deep));
+        assert!(pattern_matches("a/**", deep));
+        assert!(pattern_matches("**/file.txt", deep));
+        assert!(!pattern_matches("a/*", deep)); // * doesn't cross dirs
+    }
+
+    #[test]
+    fn test_empty_path_segments() {
+        // Paths shouldn't have empty segments, but verify no panic
+        // This is more of a robustness test
+        assert!(!pattern_matches("/docs/", ""));
+        assert!(!pattern_matches("*", ""));
+    }
+
+    // ---------------------------------------------------------------------------
+    // SUBSUMPTION TESTS
+    // ---------------------------------------------------------------------------
+    // pattern_subsumes(a, b) = true if everything a matches, b also matches
+    // Used for detecting dead rules in CODEOWNERS
+
     #[test]
     fn test_subsumes_identical() {
         assert!(pattern_subsumes("*.rs", "*.rs"));
@@ -314,26 +728,59 @@ mod tests {
     }
 
     #[test]
-    fn test_subsumes_wildcard() {
-        // * subsumes everything
+    fn test_subsumes_catchall() {
+        // * and ** subsume everything - this is the "docs/ @baz" followed by "* @gav" case
+        // where docs/ becomes a dead rule because * matches everything and comes later
         assert!(pattern_subsumes("*.rs", "*"));
         assert!(pattern_subsumes("*.go", "*"));
-        assert!(pattern_subsumes("/src/", "*"));
+        assert!(pattern_subsumes("/src/", "*")); // anchored dir
+        assert!(pattern_subsumes("docs/", "*")); // unanchored dir - critical case!
+        assert!(pattern_subsumes("src/lib/", "*")); // unanchored nested dir
         assert!(pattern_subsumes("Makefile", "*"));
         assert!(pattern_subsumes("src/main.rs", "*"));
-
-        // ** also subsumes everything
         assert!(pattern_subsumes("*.rs", "**"));
         assert!(pattern_subsumes("/src/lib/", "**"));
+        assert!(pattern_subsumes("docs/", "**")); // unanchored dir subsumed by **
+    }
+
+    #[test]
+    fn test_subsumes_dead_rule_scenarios() {
+        // Real-world CODEOWNERS footguns where earlier rules become dead
+        //
+        // Scenario 1: Catch-all at end shadows everything
+        // ```
+        // docs/ @docs-team
+        // * @default-team    <- docs/ is now dead, @default-team owns docs/
+        // ```
+        assert!(pattern_subsumes("docs/", "*"));
+
+        // Scenario 2: Specific before general (WRONG order)
+        // ```
+        // /src/auth/ @security
+        // /src/ @backend       <- /src/auth/ is dead, @backend owns it
+        // ```
+        assert!(pattern_subsumes("/src/auth/", "/src/"));
+
+        // Scenario 3: Extension pattern before catch-all
+        // ```
+        // *.rs @rust-team
+        // * @default          <- *.rs is dead
+        // ```
+        assert!(pattern_subsumes("*.rs", "*"));
+
+        // Scenario 4: NOT dead - unanchored survives anchored
+        // ```
+        // docs/ @docs-team    <- still matches src/docs/, lib/docs/, etc.
+        // /docs/ @root-docs   <- only matches root docs/
+        // ```
+        assert!(!pattern_subsumes("docs/", "/docs/"));
     }
 
     #[test]
     fn test_subsumes_extension() {
         // *.rs.bak subsumed by *.bak
         assert!(pattern_subsumes("*.rs.bak", "*.bak"));
-        // but not the other way
         assert!(!pattern_subsumes("*.bak", "*.rs.bak"));
-        // *.rs not subsumed by *.go
         assert!(!pattern_subsumes("*.rs", "*.go"));
     }
 
@@ -342,28 +789,56 @@ mod tests {
         // /src/lib/ subsumed by /src/
         assert!(pattern_subsumes("/src/lib/", "/src/"));
         assert!(pattern_subsumes("src/lib/", "src/"));
-        // /src/** also subsumes /src/lib/
         assert!(pattern_subsumes("/src/lib/", "/src/**"));
-        // but /src/ not subsumed by /src/lib/
         assert!(!pattern_subsumes("/src/", "/src/lib/"));
     }
 
     #[test]
     fn test_subsumes_file_in_dir() {
-        // src/main.rs subsumed by src/
         assert!(pattern_subsumes("src/main.rs", "src/"));
         assert!(pattern_subsumes("src/main.rs", "src/**"));
-        // but not by a different dir
         assert!(!pattern_subsumes("src/main.rs", "lib/"));
     }
 
     #[test]
     fn test_not_subsumed() {
-        // Different extensions
         assert!(!pattern_subsumes("*.rs", "*.go"));
-        // Different directories
         assert!(!pattern_subsumes("/src/", "/lib/"));
-        // Wildcard doesn't subsume specific
         assert!(!pattern_subsumes("*", "*.rs"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // ANCHORED VS UNANCHORED SUBSUMPTION
+    // ---------------------------------------------------------------------------
+    // Unanchored patterns match MORE files than anchored patterns.
+    // - /docs/ (anchored) IS subsumed by docs/ (unanchored)
+    // - docs/ (unanchored) is NOT subsumed by /docs/ (anchored)
+
+    #[test]
+    fn test_subsumes_anchored_by_unanchored() {
+        // Anchored pattern IS subsumed by unanchored (unanchored matches more)
+        assert!(pattern_subsumes("/docs/", "docs/"));
+        assert!(pattern_subsumes("/src/lib/", "src/lib/"));
+    }
+
+    #[test]
+    fn test_subsumes_unanchored_not_by_anchored() {
+        // Unanchored pattern is NOT subsumed by anchored (unanchored matches nested paths)
+        assert!(!pattern_subsumes("docs/", "/docs/"));
+        assert!(!pattern_subsumes("src/", "/src/"));
+    }
+
+    #[test]
+    fn test_subsumes_both_anchored() {
+        // Both anchored - normal subsumption rules apply
+        assert!(pattern_subsumes("/src/lib/", "/src/"));
+        assert!(!pattern_subsumes("/src/", "/src/lib/"));
+    }
+
+    #[test]
+    fn test_subsumes_both_unanchored() {
+        // Both unanchored - normal subsumption rules apply
+        assert!(pattern_subsumes("src/lib/", "src/"));
+        assert!(!pattern_subsumes("src/", "src/lib/"));
     }
 }
