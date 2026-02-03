@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.1] - 2026-02-03
+
+### Fixed
+
+- **`optimize --write` no longer causes shadowing** - optimized patterns now replace the original rules in-place instead of being appended at the end of the file, which was causing catch-all rules to shadow the optimizations
+
 ## [0.9.0] - 2026-02-02
 
 ### Added
