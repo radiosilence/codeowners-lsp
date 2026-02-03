@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.12.2] - 2026-02-03
+## [0.12.3] - 2026-02-03
 
 ### Fixed
 
@@ -9,10 +9,6 @@
 ### Changed
 
 - **Snazzier coverage output** - Added visual progress bar, better formatting, and shows ALL unowned files (no 50 file limit)
-
-### Known Bugs
-
-- **Code actions intermittently disappear** - Actions sometimes appear once then stop showing. Seems to affect `.toml` config files more than others - may be IDE-related
 
 ## [0.12.1] - 2026-02-03
 
