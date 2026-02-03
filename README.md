@@ -10,6 +10,7 @@ codeowners-cli lint
 codeowners-cli lint --json            # Machine-readable output for CI
 codeowners-cli lint --fix             # Auto-fix safe issues (dupes, shadowed, no-match)
 codeowners-cli lint --strict          # Exit non-zero on warnings (not just errors)
+codeowners-cli lint --github-actions  # Output GitHub Actions annotations for PR feedback
 
 # Check who owns a file
 codeowners-cli check src/main.rs

@@ -42,6 +42,9 @@ enum Commands {
         /// Exit non-zero on warnings (not just errors)
         #[arg(long)]
         strict: bool,
+        /// Output GitHub Actions annotations (::error, ::warning)
+        #[arg(long)]
+        github_actions: bool,
     },
     /// Format CODEOWNERS file (normalizes spacing)
     #[command(alias = "format")]
@@ -139,7 +142,8 @@ async fn main() -> ExitCode {
             json,
             fix,
             strict,
-        } => commands::lint(path, json, fix, strict).await,
+            github_actions,
+        } => commands::lint(path, json, fix, strict, github_actions).await,
         Commands::Fmt { path, write } => commands::fmt(path, write),
         Commands::Check { file } => commands::check(&file),
         Commands::Coverage {

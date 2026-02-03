@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.12.5] - 2026-02-03
+
+### Added
+
+- **`lint --github-actions`** - Output GitHub Actions annotations for inline PR feedback:
+  ```bash
+  codeowners-cli lint --github-actions
+  # Outputs both human-readable and ::error/::warning annotations
+  ```
+
 ## [0.12.4] - 2026-02-03
 
 ### Added

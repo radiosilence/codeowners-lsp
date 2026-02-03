@@ -16,7 +16,13 @@ use crate::settings::load_settings_from_path;
 
 const CONCURRENCY: usize = 5;
 
-pub async fn lint(path: Option<PathBuf>, json_output: bool, fix: bool, strict: bool) -> ExitCode {
+pub async fn lint(
+    path: Option<PathBuf>,
+    json_output: bool,
+    fix: bool,
+    strict: bool,
+    github_actions: bool,
+) -> ExitCode {
     let cwd = env::current_dir().expect("Failed to get current directory");
 
     let codeowners_path = path.unwrap_or_else(|| {
@@ -150,6 +156,31 @@ pub async fn lint(path: Option<PathBuf>, json_output: bool, fix: bool, strict: b
                 code.bold(),
                 d.message
             );
+        }
+    }
+
+    // Output GitHub Actions annotations
+    if github_actions {
+        let file_path = codeowners_path.display();
+        for d in &diagnostics {
+            let level = match d.severity {
+                Some(DiagnosticSeverity::ERROR) => "error",
+                Some(DiagnosticSeverity::WARNING) => "warning",
+                _ => "notice", // hints and info become notices
+            };
+            let line = d.range.start.line + 1;
+            let col = d.range.start.character + 1;
+            let title = d
+                .code
+                .as_ref()
+                .map(|c| match c {
+                    NumberOrString::String(s) => s.clone(),
+                    NumberOrString::Number(n) => n.to_string(),
+                })
+                .unwrap_or_default();
+            // Escape message for GitHub Actions (newlines become %0A)
+            let message = d.message.replace('\n', "%0A").replace('\r', "%0D");
+            println!("::{level} file={file_path},line={line},col={col},title={title}::{message}");
         }
     }
 
