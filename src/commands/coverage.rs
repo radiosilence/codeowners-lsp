@@ -9,6 +9,23 @@ use crate::file_cache::FileCache;
 use crate::ownership::{find_codeowners, get_repo_root};
 use crate::parser;
 
+/// Generate a visual progress bar
+fn progress_bar(percentage: f64, width: usize) -> String {
+    let filled = ((percentage / 100.0) * width as f64).round() as usize;
+    let empty = width.saturating_sub(filled);
+
+    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+
+    // Color the bar based on coverage
+    if percentage >= 90.0 {
+        bar.green().to_string()
+    } else if percentage >= 70.0 {
+        bar.yellow().to_string()
+    } else {
+        bar.red().to_string()
+    }
+}
+
 pub fn coverage(files: Option<Vec<String>>, files_from: Option<PathBuf>, stdin: bool) -> ExitCode {
     let cwd = env::current_dir().expect("Failed to get current directory");
 
@@ -71,37 +88,56 @@ pub fn coverage(files: Option<Vec<String>>, files_from: Option<PathBuf>, stdin: 
 
     // Color the percentage based on coverage level
     let pct_colored = if coverage_pct >= 90.0 {
-        format!("{:.1}%", coverage_pct).green()
+        format!("{:.1}%", coverage_pct).green().bold()
     } else if coverage_pct >= 70.0 {
-        format!("{:.1}%", coverage_pct).yellow()
+        format!("{:.1}%", coverage_pct).yellow().bold()
     } else {
-        format!("{:.1}%", coverage_pct).red()
+        format!("{:.1}%", coverage_pct).red().bold()
     };
 
+    // Print header
+    println!();
     println!(
-        "{} {} ({}/{} {} files have owners)",
-        "Coverage:".bold(),
-        pct_colored,
-        owned_count.to_string().green(),
-        total_files,
-        mode
+        "  {} {}",
+        "CODEOWNERS Coverage".bold(),
+        format!("({} files)", mode).dimmed()
+    );
+    println!();
+
+    // Print progress bar
+    println!("  {} {}", progress_bar(coverage_pct, 30), pct_colored);
+    println!();
+
+    // Print stats
+    println!(
+        "  {}  {} owned",
+        "✓".green(),
+        owned_count.to_string().green().bold()
+    );
+    println!(
+        "  {}  {} unowned",
+        "✗".red(),
+        unowned.len().to_string().red().bold()
+    );
+    println!(
+        "  {}  {} total",
+        "•".dimmed(),
+        total_files.to_string().dimmed()
     );
 
     if unowned.is_empty() {
-        println!("\n{} All files have owners!", "✓".green());
+        println!();
+        println!("  {} 🎉", "All files have owners!".green().bold());
+        println!();
         ExitCode::SUCCESS
     } else {
-        println!(
-            "\n{} ({}):",
-            "Files without owners".yellow(),
-            unowned.len().to_string().red()
-        );
-        for file in unowned.iter().take(50) {
-            println!("  {}", file.dimmed());
+        println!();
+        println!("  {}:", "Unowned files".yellow().bold());
+        println!();
+        for file in &unowned {
+            println!("    {} {}", "•".red(), file);
         }
-        if unowned.len() > 50 {
-            println!("  {} {} more", "...and".dimmed(), unowned.len() - 50);
-        }
+        println!();
         ExitCode::from(1)
     }
 }

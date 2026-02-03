@@ -1227,6 +1227,13 @@ impl LanguageServer for Backend {
                 // Spawn background validation for uncached owners
                 self.validate_owners_background(uri.clone(), owners_to_validate)
                     .await;
+            } else {
+                // Non-CODEOWNERS file changed - update its diagnostics with new line count
+                let line_count = change.text.lines().count() as u32;
+                let diagnostics = self.check_file_not_owned(uri, line_count);
+                self.client
+                    .publish_diagnostics(uri.clone(), diagnostics, None)
+                    .await;
             }
         }
     }

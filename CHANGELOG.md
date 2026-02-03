@@ -2,15 +2,17 @@
 
 ## [0.12.2] - 2026-02-03
 
+### Fixed
+
+- **File diagnostics now update with content changes** - Diagnostics for non-CODEOWNERS files (e.g. `file-not-owned`) now update correctly when the file is edited
+
+### Changed
+
+- **Snazzier coverage output** - Added visual progress bar, better formatting, and shows ALL unowned files (no 50 file limit)
+
 ### Known Bugs
 
-- **File diagnostics don't update with content changes** - Diagnostics for non-CODEOWNERS files can get stuck (e.g. highlighting half the file after adding lines)
 - **Code actions intermittently disappear** - Actions sometimes appear once then stop showing. Seems to affect `.toml` config files more than others - may be IDE-related
-
-### Ideas / Future
-
-- **Snazzier coverage output** - Colors, maybe a graph
-- **Lint: show full uncovered files list** - Currently shows a summary, should show complete list
 
 ## [0.12.1] - 2026-02-03
 
