@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.12.0] - 2026-02-03
+
+### Added
+
+- **`coverage` file filtering for CI** - Check ownership of specific files instead of the whole repo:
+  ```bash
+  codeowners-cli coverage --files src/new.rs src/other.rs
+  codeowners-cli coverage --files-from changed_files.txt
+  git diff --name-only origin/main | codeowners-cli coverage --stdin
+  ```
+
+- **`coverage` now exits non-zero** - Returns exit code 1 if any checked files are unowned. Useful for CI to enforce ownership on new files.
+
+- **`lint --strict`** - Exit non-zero on warnings, not just errors. Useful for stricter CI checks.
+
 ## [0.11.1] - 2026-02-03
 
 ### Fixed

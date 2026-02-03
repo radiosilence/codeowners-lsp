@@ -9,12 +9,18 @@ Language server for CODEOWNERS files with diagnostics, navigation, and code acti
 codeowners-cli lint
 codeowners-cli lint --json            # Machine-readable output for CI
 codeowners-cli lint --fix             # Auto-fix safe issues (dupes, shadowed, no-match)
+codeowners-cli lint --strict          # Exit non-zero on warnings (not just errors)
 
 # Check who owns a file
 codeowners-cli check src/main.rs
 
-# Show coverage stats
+# Show coverage stats (exits non-zero if uncovered files exist)
 codeowners-cli coverage
+
+# Check coverage for specific files (useful for CI on PRs)
+codeowners-cli coverage --files src/new_file.rs src/other.rs
+codeowners-cli coverage --files-from changed_files.txt
+git diff --name-only origin/main | codeowners-cli coverage --stdin
 
 # Suggest owners for unowned files (requires lookup_cmd config)
 # NOTE: Experimental - requires lookup_cmd to resolve emails to teams

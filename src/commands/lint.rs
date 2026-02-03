@@ -16,7 +16,7 @@ use crate::settings::load_settings_from_path;
 
 const CONCURRENCY: usize = 5;
 
-pub async fn lint(path: Option<PathBuf>, json_output: bool, fix: bool) -> ExitCode {
+pub async fn lint(path: Option<PathBuf>, json_output: bool, fix: bool, strict: bool) -> ExitCode {
     let cwd = env::current_dir().expect("Failed to get current directory");
 
     let codeowners_path = path.unwrap_or_else(|| {
@@ -153,11 +153,7 @@ pub async fn lint(path: Option<PathBuf>, json_output: bool, fix: bool) -> ExitCo
         }
     }
 
-    let has_errors = diagnostics
-        .iter()
-        .any(|d| matches!(d.severity, Some(DiagnosticSeverity::ERROR)));
-
-    if has_errors {
+    if should_fail(&diagnostics, strict) {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
@@ -261,4 +257,82 @@ async fn validate_owners_for_lint(
     }
 
     diagnostics
+}
+
+/// Determine exit code based on diagnostics and strict mode
+fn should_fail(diagnostics: &[Diagnostic], strict: bool) -> bool {
+    let has_errors = diagnostics
+        .iter()
+        .any(|d| matches!(d.severity, Some(DiagnosticSeverity::ERROR)));
+
+    let has_warnings = diagnostics
+        .iter()
+        .any(|d| matches!(d.severity, Some(DiagnosticSeverity::WARNING)));
+
+    has_errors || (strict && has_warnings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_diag(severity: DiagnosticSeverity) -> Diagnostic {
+        Diagnostic {
+            severity: Some(severity),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_should_fail_no_diagnostics() {
+        assert!(!should_fail(&[], false));
+        assert!(!should_fail(&[], true));
+    }
+
+    #[test]
+    fn test_should_fail_errors_always_fail() {
+        let diags = vec![make_diag(DiagnosticSeverity::ERROR)];
+        assert!(should_fail(&diags, false));
+        assert!(should_fail(&diags, true));
+    }
+
+    #[test]
+    fn test_should_fail_warnings_only_in_strict() {
+        let diags = vec![make_diag(DiagnosticSeverity::WARNING)];
+        assert!(!should_fail(&diags, false)); // Not strict, warnings OK
+        assert!(should_fail(&diags, true)); // Strict, warnings fail
+    }
+
+    #[test]
+    fn test_should_fail_hints_never_fail() {
+        let diags = vec![make_diag(DiagnosticSeverity::HINT)];
+        assert!(!should_fail(&diags, false));
+        assert!(!should_fail(&diags, true));
+    }
+
+    #[test]
+    fn test_should_fail_info_never_fail() {
+        let diags = vec![make_diag(DiagnosticSeverity::INFORMATION)];
+        assert!(!should_fail(&diags, false));
+        assert!(!should_fail(&diags, true));
+    }
+
+    #[test]
+    fn test_should_fail_mixed_severities() {
+        // Error + warning = fail
+        let diags = vec![
+            make_diag(DiagnosticSeverity::ERROR),
+            make_diag(DiagnosticSeverity::WARNING),
+        ];
+        assert!(should_fail(&diags, false));
+        assert!(should_fail(&diags, true));
+
+        // Warning + hint, non-strict = pass
+        let diags = vec![
+            make_diag(DiagnosticSeverity::WARNING),
+            make_diag(DiagnosticSeverity::HINT),
+        ];
+        assert!(!should_fail(&diags, false));
+        assert!(should_fail(&diags, true));
+    }
 }

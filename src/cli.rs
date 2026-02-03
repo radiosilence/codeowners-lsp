@@ -39,6 +39,9 @@ enum Commands {
         /// Auto-fix safe issues (duplicate owners, shadowed rules, no-match patterns)
         #[arg(long)]
         fix: bool,
+        /// Exit non-zero on warnings (not just errors)
+        #[arg(long)]
+        strict: bool,
     },
     /// Format CODEOWNERS file (normalizes spacing)
     #[command(alias = "format")]
@@ -55,7 +58,17 @@ enum Commands {
         file: String,
     },
     /// Show files without owners and coverage percentage
-    Coverage,
+    Coverage {
+        /// Check only specific files (useful for PR checks)
+        #[arg(long, num_args = 1..)]
+        files: Option<Vec<String>>,
+        /// Read files to check from a file (one per line)
+        #[arg(long, value_name = "PATH")]
+        files_from: Option<PathBuf>,
+        /// Read files to check from stdin (one per line)
+        #[arg(long)]
+        stdin: bool,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -109,10 +122,19 @@ async fn main() -> ExitCode {
     let args = Cli::parse();
 
     match args.command {
-        Commands::Lint { path, json, fix } => commands::lint(path, json, fix).await,
+        Commands::Lint {
+            path,
+            json,
+            fix,
+            strict,
+        } => commands::lint(path, json, fix, strict).await,
         Commands::Fmt { path, write } => commands::fmt(path, write),
         Commands::Check { file } => commands::check(&file),
-        Commands::Coverage => commands::coverage(),
+        Commands::Coverage {
+            files,
+            files_from,
+            stdin,
+        } => commands::coverage(files, files_from, stdin),
         Commands::Completions { shell } => {
             generate(
                 shell,
