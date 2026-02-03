@@ -80,6 +80,15 @@ enum Commands {
         /// GitHub token (or use GITHUB_TOKEN env var)
         #[arg(long, env = "GITHUB_TOKEN")]
         token: String,
+        /// Only validate owners for rules matching these files
+        #[arg(long, num_args = 1..)]
+        files: Option<Vec<String>>,
+        /// Read files to filter by from a file (one per line)
+        #[arg(long, value_name = "PATH")]
+        files_from: Option<PathBuf>,
+        /// Read files to filter by from stdin (one per line)
+        #[arg(long)]
+        stdin: bool,
     },
     /// Show all files color-coded by owner
     Tree,
@@ -144,7 +153,12 @@ async fn main() -> ExitCode {
             );
             ExitCode::SUCCESS
         }
-        Commands::ValidateOwners { token } => commands::validate_owners(&token).await,
+        Commands::ValidateOwners {
+            token,
+            files,
+            files_from,
+            stdin,
+        } => commands::validate_owners(&token, files, files_from, stdin).await,
         Commands::Tree => commands::tree(),
         Commands::Config => commands::config(),
         Commands::Suggest {

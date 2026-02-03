@@ -15,6 +15,13 @@
 
 - **`lint --strict`** - Exit non-zero on warnings, not just errors. Useful for stricter CI checks.
 
+- **`validate-owners` file filtering** - Only validate owners for rules matching specific files:
+  ```bash
+  codeowners-cli validate-owners --files src/new.rs src/other.rs
+  codeowners-cli validate-owners --files-from changed_files.txt
+  git diff --name-only origin/main | codeowners-cli validate-owners --stdin
+  ```
+
 ## [0.11.1] - 2026-02-03
 
 ### Fixed

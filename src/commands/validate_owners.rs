@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::{env, fs};
@@ -7,9 +8,11 @@ use colored::Colorize;
 use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 
+use super::files::collect_files;
 use crate::github::GitHubClient;
 use crate::ownership::find_codeowners;
 use crate::parser::{parse_codeowners_file_with_positions, CodeownersLine};
+use crate::pattern::pattern_matches;
 
 const CONCURRENCY: usize = 5;
 
@@ -20,7 +23,12 @@ enum ValidationResult {
     Unknown(String, &'static str),
 }
 
-pub async fn validate_owners(token: &str) -> ExitCode {
+pub async fn validate_owners(
+    token: &str,
+    files: Option<Vec<String>>,
+    files_from: Option<PathBuf>,
+    stdin: bool,
+) -> ExitCode {
     let cwd = env::current_dir().expect("Failed to get current directory");
 
     let codeowners_path = match find_codeowners(&cwd) {
@@ -39,24 +47,45 @@ pub async fn validate_owners(token: &str) -> ExitCode {
         }
     };
 
-    // Collect unique owners
+    // Collect files to filter by (if specified)
+    let files_filter = match collect_files(files, files_from, stdin) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{}", e);
+            return ExitCode::from(1);
+        }
+    };
+
+    // Collect owners (optionally filtered by which rules match specified files)
     let lines = parse_codeowners_file_with_positions(&content);
     let mut owners: HashSet<String> = HashSet::new();
 
     for line in &lines {
         if let CodeownersLine::Rule {
+            pattern,
             owners: line_owners,
-            ..
         } = &line.content
         {
-            for owner in line_owners {
-                owners.insert(owner.clone());
+            // If file filter specified, only include owners from matching rules
+            let should_include = match &files_filter {
+                Some(filter) => filter.iter().any(|f| pattern_matches(pattern, f)),
+                None => true,
+            };
+
+            if should_include {
+                for owner in line_owners {
+                    owners.insert(owner.clone());
+                }
             }
         }
     }
 
     if owners.is_empty() {
-        println!("{}", "No owners found in CODEOWNERS".yellow());
+        if files_filter.is_some() {
+            println!("{}", "No owners found for the specified files".yellow());
+        } else {
+            println!("{}", "No owners found in CODEOWNERS".yellow());
+        }
         return ExitCode::SUCCESS;
     }
 
@@ -65,9 +94,15 @@ pub async fn validate_owners(token: &str) -> ExitCode {
     owners_vec.sort();
 
     let total = owners_vec.len();
+    let filter_msg = if files_filter.is_some() {
+        " (filtered by files)"
+    } else {
+        ""
+    };
     println!(
-        "Validating {} unique owners against GitHub...\n",
-        total.to_string().cyan()
+        "Validating {} unique owners against GitHub{}...\n",
+        total.to_string().cyan(),
+        filter_msg
     );
 
     // Progress bar

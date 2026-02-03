@@ -1,6 +1,7 @@
 mod check;
 mod config;
 mod coverage;
+mod files;
 mod fmt;
 mod lint;
 mod optimize;

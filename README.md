@@ -44,6 +44,11 @@ codeowners-cli fmt --write            # Writes in place
 codeowners-cli validate-owners        # Uses GITHUB_TOKEN env var
 codeowners-cli validate-owners --token ghp_xxx
 
+# Validate only owners relevant to specific files (useful for CI on PRs)
+codeowners-cli validate-owners --files src/new.rs src/other.rs
+codeowners-cli validate-owners --files-from changed_files.txt
+git diff --name-only origin/main | codeowners-cli validate-owners --stdin
+
 # Show all files color-coded by owner
 codeowners-cli tree
 
