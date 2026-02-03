@@ -102,7 +102,30 @@ pub async fn lint(
     // Sort diagnostics by line number
     diagnostics.sort_by_key(|d| d.range.start.line);
 
-    if json_output {
+    if github_actions {
+        // GitHub Actions annotations only (no human output)
+        let file_path = codeowners_path.display();
+        for d in &diagnostics {
+            let level = match d.severity {
+                Some(DiagnosticSeverity::ERROR) => "error",
+                Some(DiagnosticSeverity::WARNING) => "warning",
+                _ => "notice", // hints and info become notices
+            };
+            let line = d.range.start.line + 1;
+            let col = d.range.start.character + 1;
+            let title = d
+                .code
+                .as_ref()
+                .map(|c| match c {
+                    NumberOrString::String(s) => s.clone(),
+                    NumberOrString::Number(n) => n.to_string(),
+                })
+                .unwrap_or_default();
+            // Escape message for GitHub Actions (newlines become %0A)
+            let message = d.message.replace('\n', "%0A").replace('\r', "%0D");
+            println!("::{level} file={file_path},line={line},col={col},title={title}::{message}");
+        }
+    } else if json_output {
         let json = serde_json::json!({
             "file": codeowners_path.display().to_string(),
             "diagnostics": diagnostics.iter().map(|d| {
@@ -156,31 +179,6 @@ pub async fn lint(
                 code.bold(),
                 d.message
             );
-        }
-    }
-
-    // Output GitHub Actions annotations
-    if github_actions {
-        let file_path = codeowners_path.display();
-        for d in &diagnostics {
-            let level = match d.severity {
-                Some(DiagnosticSeverity::ERROR) => "error",
-                Some(DiagnosticSeverity::WARNING) => "warning",
-                _ => "notice", // hints and info become notices
-            };
-            let line = d.range.start.line + 1;
-            let col = d.range.start.character + 1;
-            let title = d
-                .code
-                .as_ref()
-                .map(|c| match c {
-                    NumberOrString::String(s) => s.clone(),
-                    NumberOrString::Number(n) => n.to_string(),
-                })
-                .unwrap_or_default();
-            // Escape message for GitHub Actions (newlines become %0A)
-            let message = d.message.replace('\n', "%0A").replace('\r', "%0D");
-            println!("::{level} file={file_path},line={line},col={col},title={title}::{message}");
         }
     }
 
