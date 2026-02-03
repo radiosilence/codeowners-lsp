@@ -226,6 +226,81 @@ JSON settings can also be passed via LSP init options (these override TOML confi
 | CLI: suggest (git-based suggestions)  | ⚠️ experimental |
 | CLI: optimize (pattern consolidation) | ✅     |
 
+## How It Works
+
+### Optimization (`optimize`)
+
+The optimizer detects two types of issues:
+
+**1. Shadowed Rules (Dead Code)**
+
+CODEOWNERS uses "last match wins" semantics. If a later rule matches the same files as an earlier one, the earlier rule is dead code:
+
+```
+/src/auth/ @security     # ❌ Dead - shadowed by /src/ below
+/src/ @backend           # ✅ This wins for /src/auth/*
+```
+
+The optimizer works backwards from the end of the file, tracking which patterns could shadow earlier ones. A pattern is shadowed if any later pattern "subsumes" it (matches everything it matches). The catch-all `*` subsumes everything, so any rule before a final `* @team` is dead.
+
+Key subsumption rules:
+- `*` and `**` subsume all patterns
+- `/src/` subsumes `/src/lib/` (parent directory contains child)
+- `docs/` (unanchored) subsumes `/docs/` (anchored) - unanchored matches more
+- `/docs/` does NOT subsume `docs/` - anchored matches fewer paths
+
+**2. Directory Consolidation**
+
+When multiple files in a directory have identical owners:
+
+```
+/src/lib/foo.rs @team    # These three lines...
+/src/lib/bar.rs @team
+/src/lib/baz.rs @team
+```
+
+...can become:
+
+```
+/src/lib/ @team          # ...this one line
+```
+
+Consolidation only triggers when:
+- All files in the directory are explicitly listed
+- All have exactly the same owners
+- At least 3 files (configurable with `--min-files`)
+- The resulting pattern wouldn't be immediately shadowed
+
+### Suggestions (`suggest`)
+
+The suggester analyzes git history to recommend owners for unowned files.
+
+**How it works:**
+
+1. **Find unowned files** - Files not matched by any CODEOWNERS rule
+2. **Analyze git blame** - For each file, get line-by-line author information
+3. **Weight by recency** - Recent changes matter more than ancient history
+4. **Aggregate by author** - Sum weighted contributions per author
+5. **Resolve to teams** - Use `lookup_cmd` to map emails → team names
+6. **Match existing owners** - Fuzzy-match against owners already in CODEOWNERS
+7. **Calculate confidence** - Based on contribution concentration and history depth
+
+**The `lookup_cmd` config:**
+
+```toml
+lookup_cmd = "your-tool lookup {email} | jq -r .team"
+```
+
+The command receives a git email and should output a team/owner identifier. This gets fuzzy-matched against existing CODEOWNERS entries to maintain consistency.
+
+**Confidence scoring:**
+
+- High (70%+): Single dominant contributor, maps cleanly to existing team
+- Medium (40-70%): Clear top contributor but some ambiguity
+- Low (<40%): Scattered ownership, multiple teams, or unmapped authors
+
+Use `--min-confidence` to filter suggestions.
+
 ## License
 
 MIT
