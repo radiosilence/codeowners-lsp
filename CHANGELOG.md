@@ -1,20 +1,27 @@
 # Changelog
 
-## [0.10.6] - 2026-02-03
-
-### Added
-
-- **`suggest --anchored`** - Option to prepend `/` to suggested paths, creating anchored patterns like `/src/` instead of `src/`.
-
-## [0.10.5] - 2026-02-03
+## [0.11.0] - 2026-02-03
 
 ### Changed
+
+- **Config: `[suggest]` section** - `lookup_cmd` moved into `[suggest]` section. Update your config:
+  ```toml
+  # Before
+  lookup_cmd = "..."
+  
+  # After
+  [suggest]
+  lookup_cmd = "..."
+  anchored = true  # optional: prepend / to paths
+  ```
 
 - **`fix` command removed** - Use `lint --fix` instead.
 
 ### Added
 
-- **Remove patterns matching no files** - Both `lint --fix` and `optimize` now detect and remove patterns that don't match any files in the repository.
+- **`suggest --anchored`** - Prepend `/` to suggested paths (anchored patterns). Also available via config.
+- **`lint --fix`** - Auto-fix safe issues (duplicate owners, shadowed rules, no-match patterns).
+- **Remove no-match patterns** - Both `lint --fix` and `optimize` now remove patterns that match no files.
 
 ## [0.10.4] - 2026-02-03
 
