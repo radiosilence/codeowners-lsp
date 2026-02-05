@@ -195,29 +195,27 @@ impl Backend {
         }
     }
 
-    /// Validate uncached owners in background and refresh diagnostics when done
-    async fn validate_owners_background(
-        &self,
+    /// Validate uncached owners in a spawned task (doesn't block LSP responses)
+    async fn validate_owners_task(
+        github_client: Arc<GitHubClient>,
+        lsp_client: Client,
+        settings: Settings,
         uri: Url,
         owners: Vec<diagnostics::OwnerValidationInfo>,
+        content: String,
     ) {
         // Check if validation is enabled
-        let (enabled, token) = {
-            let settings = self.settings.read().unwrap();
-            (settings.validate_owners, self.get_github_token())
-        };
-
-        if !enabled {
+        if !settings.validate_owners {
             return;
         }
-        let Some(token) = token else {
+        let Some(token) = settings.resolve_token() else {
             return;
         };
 
         // Find owners not already in cache
         let uncached: Vec<_> = owners
             .iter()
-            .filter(|(_, _, owner, _)| !self.github_client.is_cached(owner))
+            .filter(|(_, _, owner, _)| !github_client.is_cached(owner))
             .map(|(_, _, owner, _)| owner.clone())
             .collect();
 
@@ -225,11 +223,10 @@ impl Backend {
             return;
         }
 
-        // Validate uncached owners and fetch metadata (this is async but we don't block)
+        // Validate uncached owners and fetch metadata
         let mut any_validated = false;
         for owner in uncached {
-            if self
-                .github_client
+            if github_client
                 .validate_owner_with_info(&owner, &token)
                 .await
                 .is_some()
@@ -238,17 +235,13 @@ impl Backend {
             }
         }
 
-        // If we validated anything, save cache and refresh diagnostics
+        // If we validated anything, refresh diagnostics
+        // (cache save happens on file save or shutdown - skipping here to keep task simple)
         if any_validated {
-            // Save to persistent cache so it survives restarts
-            self.save_persistent_cache();
-
-            if let Some(content) = self.get_codeowners_content() {
-                let diagnostics = self.compute_diagnostics(&content).await;
-                self.client
-                    .publish_diagnostics(uri, diagnostics, None)
-                    .await;
-            }
+            let file_cache = None; // Skip pattern matching for speed
+            let diag_config = settings.diagnostic_config();
+            let (diagnostics, _) = compute_diagnostics_sync(&content, file_cache, &diag_config);
+            lsp_client.publish_diagnostics(uri, diagnostics, None).await;
         }
     }
 
@@ -1132,6 +1125,8 @@ impl LanguageServer for Backend {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        // Save GitHub cache to disk before exiting
+        self.save_persistent_cache();
         Ok(())
     }
 
@@ -1224,9 +1219,26 @@ impl LanguageServer for Backend {
                 // Tell editor to refresh inlay hints (ownership may have changed)
                 let _ = self.client.inlay_hint_refresh().await;
 
-                // Spawn background validation for uncached owners
-                self.validate_owners_background(uri.clone(), owners_to_validate)
-                    .await;
+                // Spawn background validation for uncached owners (fire-and-forget)
+                // Don't await - we don't want to block typing while hitting GitHub API
+                {
+                    let client = self.github_client.clone();
+                    let lsp_client = self.client.clone();
+                    let settings = self.settings.read().unwrap().clone();
+                    let content = change.text.clone();
+                    let uri = uri.clone();
+                    tokio::spawn(async move {
+                        Self::validate_owners_task(
+                            client,
+                            lsp_client,
+                            settings,
+                            uri,
+                            owners_to_validate,
+                            content,
+                        )
+                        .await;
+                    });
+                }
             } else {
                 // Non-CODEOWNERS file changed - update its diagnostics with new line count
                 let line_count = change.text.lines().count() as u32;
@@ -1259,7 +1271,7 @@ impl LanguageServer for Backend {
             // Tell editor to refresh inlay hints (ownership may have changed)
             let _ = self.client.inlay_hint_refresh().await;
 
-            // Trigger background validation for any uncached owners
+            // Trigger background validation for any uncached owners (fire-and-forget on save too)
             if let Some(content) = self.get_codeowners_content() {
                 let diag_config = {
                     let settings = self.settings.read().unwrap();
@@ -1267,8 +1279,22 @@ impl LanguageServer for Backend {
                 };
                 let (_, owners_to_validate) =
                     compute_diagnostics_sync(&content, None, &diag_config);
-                self.validate_owners_background(uri.clone(), owners_to_validate)
+
+                let client = self.github_client.clone();
+                let lsp_client = self.client.clone();
+                let settings = self.settings.read().unwrap().clone();
+                let uri = uri.clone();
+                tokio::spawn(async move {
+                    Self::validate_owners_task(
+                        client,
+                        lsp_client,
+                        settings,
+                        uri,
+                        owners_to_validate,
+                        content,
+                    )
                     .await;
+                });
             }
         }
     }
