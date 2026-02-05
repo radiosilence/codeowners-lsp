@@ -122,13 +122,14 @@ jobs:
           name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
           path: ${{ env.BINARY_NAME }}-${{ matrix.target }}.${{ matrix.archive }}
 
-  # Create release (only if version changed)
-  release:
-    name: Release
+  # Check if version changed
+  check-version:
+    name: Check Version
     needs: [build]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -153,28 +154,36 @@ jobs:
             echo "should_release=false" >> $GITHUB_OUTPUT
           fi
 
+  # Create release (only if version changed)
+  release:
+    name: Release
+    needs: [check-version]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
-        if: steps.check.outputs.should_release == 'true'
         with:
           path: artifacts
 
       - name: Delete existing release and tag
-        if: steps.check.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="v${{ steps.check.outputs.version }}"
+          VERSION="v${{ needs.check-version.outputs.version }}"
           # Delete release if exists
           gh release delete "$VERSION" --yes 2>/dev/null || true
           # Delete tag if exists
           git push origin ":refs/tags/$VERSION" 2>/dev/null || true
 
       - name: Create Release
-        if: steps.check.outputs.should_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.check.outputs.version }}
-          name: v${{ steps.check.outputs.version }}
+          tag_name: v${{ needs.check-version.outputs.version }}
+          name: v${{ needs.check-version.outputs.version }}
           draft: false
           prerelease: false
           files: artifacts/**/*
