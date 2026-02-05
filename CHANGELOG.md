@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.3] - 2026-02-05
+
+### Fixed
+
+- **LSP lockup on rapid typing** - GitHub owner validation no longer blocks the LSP. Typing `@invalidowner` rapidly won't freeze the editor.
+
+- **`gha` exit code** - Now fails (exit 1) on lint errors. Use `--strict` to also fail on warnings.
+
 ## [0.15.2] - 2026-02-05
 
 ### Fixed
