@@ -77,6 +77,40 @@ codeowners-cli gha --changed-files-from changed.txt
 # Fails on: uncovered changed files OR invalid owners for changed files
 ```
 
+## GitHub Actions
+
+The `gha` command runs all checks in one efficient call with native GHA output:
+
+```yaml
+- name: Get changed files
+  run: |
+    gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+      --paginate --jq '.[].filename' > changed_files.txt
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+- name: CODEOWNERS check
+  run: codeowners-cli gha --changed-files-from changed_files.txt
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**What it does:**
+
+- **Coverage** - Checks changed files have owners (fails if not), warns about all uncovered files
+- **Owner validation** - Validates owners for changed files exist on GitHub (fails if not), warns about all invalid owners
+- **Lint** - Checks CODEOWNERS syntax, emits `::error::` / `::warning::` annotations
+
+**Outputs:**
+
+- JSON results to stdout
+- `GITHUB_OUTPUT` vars: `has-coverage-issues`, `coverage-issues`, `has-dead-entries`, `dead-entries`, `has-invalid-teams`, `invalid-teams`
+- `GITHUB_STEP_SUMMARY` markdown report
+
+**Flags to skip checks:** `--no-coverage-changed`, `--no-coverage-all`, `--no-owners-changed`, `--no-owners-all`, `--no-lint`
+
+**Flags to control output:** `--no-json`, `--no-annotations`, `--no-summary`, `--no-outputs`
+
 ## LSP Features
 
 ### In Any File

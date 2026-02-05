@@ -30,6 +30,11 @@ pub struct GhaOptions {
     pub check_owners_changed: bool,
     pub check_owners_all: bool,
     pub check_lint: bool,
+    // Output options
+    pub output_json: bool,
+    pub output_annotations: bool,
+    pub output_summary: bool,
+    pub output_vars: bool,
 }
 
 /// Results from all checks
@@ -140,7 +145,9 @@ pub async fn gha(opts: GhaOptions) -> ExitCode {
                 };
 
                 if !unowned.is_empty() {
-                    eprintln!("::error::Changed files lack CODEOWNERS coverage");
+                    if opts.output_annotations {
+                        eprintln!("::error::Changed files lack CODEOWNERS coverage");
+                    }
                     failed = true;
                 }
 
@@ -163,7 +170,7 @@ pub async fn gha(opts: GhaOptions) -> ExitCode {
                 (owned as f64 / total_files as f64) * 100.0
             };
 
-            if !all_unowned.is_empty() {
+            if !all_unowned.is_empty() && opts.output_annotations {
                 eprintln!(
                     "::warning::Some files lack CODEOWNERS coverage ({} unowned)",
                     all_unowned.len()
@@ -281,7 +288,9 @@ pub async fn gha(opts: GhaOptions) -> ExitCode {
         if opts.check_owners_changed && opts.changed_files.is_some() {
             let result = build_owners_result(&changed_owners);
             if !result.invalid.is_empty() {
-                eprintln!("::error::Invalid teams found in CODEOWNERS for changed files");
+                if opts.output_annotations {
+                    eprintln!("::error::Invalid teams found in CODEOWNERS for changed files");
+                }
                 failed = true;
             }
             results.owners_changed = Some(result);
@@ -290,7 +299,7 @@ pub async fn gha(opts: GhaOptions) -> ExitCode {
         // All owners (warning only)
         if opts.check_owners_all {
             let result = build_owners_result(&all_owners);
-            if !result.invalid.is_empty() {
+            if !result.invalid.is_empty() && opts.output_annotations {
                 eprintln!(
                     "::warning::Invalid teams found in CODEOWNERS ({} invalid)",
                     result.invalid.len()
@@ -322,25 +331,29 @@ pub async fn gha(opts: GhaOptions) -> ExitCode {
             .collect();
 
         // Output GHA annotations
-        let file_path = codeowners_path.display();
-        for d in &diagnostics {
-            let level = match d.severity {
-                Some(DiagnosticSeverity::ERROR) => "error",
-                Some(DiagnosticSeverity::WARNING) => "warning",
-                _ => "notice",
-            };
-            let line = d.range.start.line + 1;
-            let col = d.range.start.character + 1;
-            let title = d
-                .code
-                .as_ref()
-                .map(|c| match c {
-                    NumberOrString::String(s) => s.clone(),
-                    NumberOrString::Number(n) => n.to_string(),
-                })
-                .unwrap_or_default();
-            let message = d.message.replace('\n', "%0A").replace('\r', "%0D");
-            println!("::{level} file={file_path},line={line},col={col},title={title}::{message}");
+        if opts.output_annotations {
+            let file_path = codeowners_path.display();
+            for d in &diagnostics {
+                let level = match d.severity {
+                    Some(DiagnosticSeverity::ERROR) => "error",
+                    Some(DiagnosticSeverity::WARNING) => "warning",
+                    _ => "notice",
+                };
+                let line = d.range.start.line + 1;
+                let col = d.range.start.character + 1;
+                let title = d
+                    .code
+                    .as_ref()
+                    .map(|c| match c {
+                        NumberOrString::String(s) => s.clone(),
+                        NumberOrString::Number(n) => n.to_string(),
+                    })
+                    .unwrap_or_default();
+                let message = d.message.replace('\n', "%0A").replace('\r', "%0D");
+                println!(
+                    "::{level} file={file_path},line={line},col={col},title={title}::{message}"
+                );
+            }
         }
 
         let lint_diagnostics: Vec<LintDiagnostic> = diagnostics
@@ -390,7 +403,7 @@ pub async fn gha(opts: GhaOptions) -> ExitCode {
     }
 
     // === Output results ===
-    output_results(&results, failed);
+    output_results(&results, &opts, failed);
 
     if failed {
         ExitCode::from(1)
@@ -399,75 +412,81 @@ pub async fn gha(opts: GhaOptions) -> ExitCode {
     }
 }
 
-fn output_results(results: &GhaResults, failed: bool) {
+fn output_results(results: &GhaResults, opts: &GhaOptions, failed: bool) {
     // Output JSON to stdout
-    println!(
-        "{}",
-        serde_json::to_string_pretty(results).expect("Failed to serialize results")
-    );
+    if opts.output_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(results).expect("Failed to serialize results")
+        );
+    }
 
     // Write GitHub Actions outputs
-    if let Ok(output_file) = env::var("GITHUB_OUTPUT") {
-        let mut outputs = Vec::new();
+    if opts.output_vars {
+        if let Ok(output_file) = env::var("GITHUB_OUTPUT") {
+            let mut outputs = Vec::new();
 
-        // Coverage changed
-        if let Some(ref cov) = results.coverage_changed {
-            outputs.push(format!(
-                "has-coverage-issues={}",
-                if cov.unowned > 0 { "true" } else { "false" }
-            ));
-            outputs.push(format!(
-                "coverage-issues={}",
-                serde_json::to_string(&cov.unowned_files).unwrap()
-            ));
-        }
+            // Coverage changed
+            if let Some(ref cov) = results.coverage_changed {
+                outputs.push(format!(
+                    "has-coverage-issues={}",
+                    if cov.unowned > 0 { "true" } else { "false" }
+                ));
+                outputs.push(format!(
+                    "coverage-issues={}",
+                    serde_json::to_string(&cov.unowned_files).unwrap()
+                ));
+            }
 
-        // Lint
-        if let Some(ref lint) = results.lint {
-            outputs.push(format!(
-                "has-dead-entries={}",
-                if lint.diagnostics.is_empty() {
-                    "false"
-                } else {
-                    "true"
+            // Lint
+            if let Some(ref lint) = results.lint {
+                outputs.push(format!(
+                    "has-dead-entries={}",
+                    if lint.diagnostics.is_empty() {
+                        "false"
+                    } else {
+                        "true"
+                    }
+                ));
+                outputs.push(format!(
+                    "dead-entries={}",
+                    serde_json::to_string(&lint.diagnostics).unwrap()
+                ));
+            }
+
+            // Invalid teams (changed)
+            if let Some(ref owners) = results.owners_changed {
+                let has_issues = !owners.invalid.is_empty() || !owners.unknown.is_empty();
+                outputs.push(format!(
+                    "has-invalid-teams={}",
+                    if has_issues { "true" } else { "false" }
+                ));
+                let issues: Vec<_> = owners.invalid.iter().chain(owners.unknown.iter()).collect();
+                outputs.push(format!(
+                    "invalid-teams={}",
+                    serde_json::to_string(&issues).unwrap()
+                ));
+            }
+
+            if let Ok(mut file) = fs::OpenOptions::new().append(true).open(&output_file) {
+                use std::io::Write;
+                for output in outputs {
+                    let _ = writeln!(file, "{}", output);
                 }
-            ));
-            outputs.push(format!(
-                "dead-entries={}",
-                serde_json::to_string(&lint.diagnostics).unwrap()
-            ));
-        }
-
-        // Invalid teams (changed)
-        if let Some(ref owners) = results.owners_changed {
-            let has_issues = !owners.invalid.is_empty() || !owners.unknown.is_empty();
-            outputs.push(format!(
-                "has-invalid-teams={}",
-                if has_issues { "true" } else { "false" }
-            ));
-            let issues: Vec<_> = owners.invalid.iter().chain(owners.unknown.iter()).collect();
-            outputs.push(format!(
-                "invalid-teams={}",
-                serde_json::to_string(&issues).unwrap()
-            ));
-        }
-
-        if let Ok(mut file) = fs::OpenOptions::new().append(true).open(&output_file) {
-            use std::io::Write;
-            for output in outputs {
-                let _ = writeln!(file, "{}", output);
             }
         }
     }
 
     // Write GitHub Actions step summary
-    if let Ok(summary_file) = env::var("GITHUB_STEP_SUMMARY") {
-        let summary = build_step_summary(results, failed);
-        let _ = fs::write(&summary_file, summary);
-    } else {
-        // Print summary to stderr for local testing
-        eprintln!("\n{}", "─".repeat(60).dimmed());
-        eprintln!("{}", build_step_summary(results, failed));
+    if opts.output_summary {
+        if let Ok(summary_file) = env::var("GITHUB_STEP_SUMMARY") {
+            let summary = build_step_summary(results, failed);
+            let _ = fs::write(&summary_file, summary);
+        } else {
+            // Print summary to stderr for local testing
+            eprintln!("\n{}", "─".repeat(60).dimmed());
+            eprintln!("{}", build_step_summary(results, failed));
+        }
     }
 }
 

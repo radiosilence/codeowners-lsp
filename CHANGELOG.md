@@ -1,10 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [0.15.0] - 2026-02-05
 
 ### Added
 
 - **`gha` command** - All-in-one GitHub Actions integration. Runs coverage, owner validation, and lint checks in a single command with GHA-native output:
+
   ```bash
   # In GitHub Actions workflow:
   gh api repos/$REPO/pulls/$PR/files --jq '.[].filename' > changed.txt

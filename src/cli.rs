@@ -176,6 +176,18 @@ enum Commands {
         /// Skip lint check
         #[arg(long)]
         no_lint: bool,
+        /// Disable JSON output to stdout
+        #[arg(long)]
+        no_json: bool,
+        /// Disable ::error::/::warning:: annotations
+        #[arg(long)]
+        no_annotations: bool,
+        /// Disable GITHUB_STEP_SUMMARY output
+        #[arg(long)]
+        no_summary: bool,
+        /// Disable GITHUB_OUTPUT variables
+        #[arg(long)]
+        no_outputs: bool,
     },
 }
 
@@ -267,6 +279,10 @@ async fn main() -> ExitCode {
             no_owners_changed,
             no_owners_all,
             no_lint,
+            no_json,
+            no_annotations,
+            no_summary,
+            no_outputs,
         } => {
             // Read changed files
             let changed_files =
@@ -287,6 +303,10 @@ async fn main() -> ExitCode {
                 check_owners_changed: !no_owners_changed,
                 check_owners_all: !no_owners_all,
                 check_lint: !no_lint,
+                output_json: !no_json,
+                output_annotations: !no_annotations,
+                output_summary: !no_summary,
+                output_vars: !no_outputs,
             })
             .await
         }
