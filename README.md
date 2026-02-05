@@ -79,37 +79,81 @@ codeowners-cli gha --changed-files-from changed.txt
 
 ## GitHub Actions
 
-The `gha` command runs all checks in one efficient call with native GHA output:
+The `gha` command runs all CODEOWNERS checks in one efficient call with native GitHub Actions integration.
+
+### Complete Workflow Example
 
 ```yaml
-- name: Get changed files
-  run: |
-    gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
-      --paginate --jq '.[].filename' > changed_files.txt
-  env:
-    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+name: CODEOWNERS
 
-- name: CODEOWNERS check
-  run: codeowners-cli gha --changed-files-from changed_files.txt
-  env:
-    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install codeowners-cli
+        run: |
+          gh release download --repo radiosilence/codeowners-lsp \
+            --pattern '*x86_64-unknown-linux-musl*' --output - | tar xz -C /usr/local/bin
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get changed files
+        run: |
+          gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+            --paginate --jq '.[].filename' > changed_files.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: CODEOWNERS check
+        run: codeowners-cli gha --changed-files-from changed_files.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-**What it does:**
+### What It Checks
 
-- **Coverage** - Checks changed files have owners (fails if not), warns about all uncovered files
-- **Owner validation** - Validates owners for changed files exist on GitHub (fails if not), warns about all invalid owners
-- **Lint** - Checks CODEOWNERS syntax, emits `::error::` / `::warning::` annotations
+| Check            | Scope           | Failure Mode                        |
+| ---------------- | --------------- | ----------------------------------- |
+| Coverage         | Changed files   | **Fails** if any lack owners        |
+| Coverage         | All files       | Warns only                          |
+| Owner validation | Changed files   | **Fails** if owners invalid/missing |
+| Owner validation | All files       | Warns only                          |
+| Lint             | CODEOWNERS file | Annotations on lines                |
 
-**Outputs:**
+### Output
 
-- JSON results to stdout
-- `GITHUB_OUTPUT` vars: `has-coverage-issues`, `coverage-issues`, `has-dead-entries`, `dead-entries`, `has-invalid-teams`, `invalid-teams`
-- `GITHUB_STEP_SUMMARY` markdown report
+The command produces four types of output:
 
-**Flags to skip checks:** `--no-coverage-changed`, `--no-coverage-all`, `--no-owners-changed`, `--no-owners-all`, `--no-lint`
+1. **JSON to stdout** - Full results for parsing/logging
+2. **Annotations** - `::error::` and `::warning::` messages appear inline on PR diffs
+3. **Step Summary** - Markdown report in the Actions UI with tables and status
+4. **Output Variables** - For use in subsequent workflow steps:
+   - `has-coverage-issues` / `coverage-issues`
+   - `has-dead-entries` / `dead-entries`
+   - `has-invalid-teams` / `invalid-teams`
 
-**Flags to control output:** `--no-json`, `--no-annotations`, `--no-summary`, `--no-outputs`
+### Flags
+
+**Skip checks:**
+
+- `--no-coverage-changed` - Don't fail on uncovered changed files
+- `--no-coverage-all` - Don't warn about all uncovered files
+- `--no-owners-changed` - Don't fail on invalid owners for changed files
+- `--no-owners-all` - Don't warn about all invalid owners
+- `--no-lint` - Skip lint checks
+
+**Control output:**
+
+- `--no-json` - Suppress JSON output
+- `--no-annotations` - Suppress `::error::`/`::warning::` messages
+- `--no-summary` - Don't write step summary
+- `--no-outputs` - Don't write output variables
 
 ## LSP Features
 
