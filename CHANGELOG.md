@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`gha` command** - All-in-one GitHub Actions integration. Runs coverage, owner validation, and lint checks in a single command with GHA-native output:
+  ```bash
+  # In GitHub Actions workflow:
+  gh api repos/$REPO/pulls/$PR/files --jq '.[].filename' > changed.txt
+  codeowners-cli gha --changed-files-from changed.txt
+  ```
+
+  - Outputs JSON results to stdout
+  - Writes `GITHUB_OUTPUT` variables (`has-coverage-issues`, `coverage-issues`, etc.)
+  - Generates `GITHUB_STEP_SUMMARY` markdown report
+  - Emits `::error::` and `::warning::` annotations
+  - Fails on: uncovered changed files OR invalid owners for changed files
+  - Warns (doesn't fail) on: all-files coverage gaps, all-owners validation issues
+
 ## [0.14.3] - 2026-02-05
 
 ### Removed

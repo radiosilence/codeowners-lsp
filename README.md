@@ -69,6 +69,12 @@ codeowners-cli tree
 
 # Generate shell completions
 codeowners-cli completions zsh       # zsh, bash, fish, powershell, elvish
+
+# GitHub Actions all-in-one command
+codeowners-cli gha --changed-files-from changed.txt
+# Runs: coverage (changed + all), owner validation (changed + all), lint
+# Outputs: JSON to stdout, GITHUB_OUTPUT vars, GITHUB_STEP_SUMMARY markdown
+# Fails on: uncovered changed files OR invalid owners for changed files
 ```
 
 ## LSP Features

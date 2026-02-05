@@ -1,8 +1,9 @@
 mod check;
 mod config;
 mod coverage;
-mod files;
+pub mod files;
 mod fmt;
+mod gha;
 mod lint;
 mod optimize;
 mod suggest;
@@ -13,6 +14,7 @@ pub use check::check;
 pub use config::config;
 pub use coverage::coverage;
 pub use fmt::fmt;
+pub use gha::{gha, GhaOptions};
 pub use lint::lint;
 pub use optimize::{optimize, OptimizeOptions, OutputFormat as OptimizeFormat};
 pub use suggest::{suggest, OutputFormat as SuggestFormat, SuggestOptions};

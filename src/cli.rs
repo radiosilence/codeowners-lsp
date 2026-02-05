@@ -149,6 +149,34 @@ enum Commands {
         #[arg(long, default_value = "3")]
         min_files: usize,
     },
+    /// Run all checks for GitHub Actions (outputs annotations, step summary, outputs)
+    #[command(name = "gha")]
+    Gha {
+        /// GitHub token (or use GITHUB_TOKEN env var)
+        #[arg(long, env = "GITHUB_TOKEN")]
+        token: String,
+        /// Read changed files from a file (one per line)
+        #[arg(long, value_name = "PATH")]
+        changed_files_from: Option<PathBuf>,
+        /// Read changed files from stdin (one per line)
+        #[arg(long)]
+        changed_files_stdin: bool,
+        /// Skip coverage check for changed files
+        #[arg(long)]
+        no_coverage_changed: bool,
+        /// Skip coverage check for all files
+        #[arg(long)]
+        no_coverage_all: bool,
+        /// Skip owner validation for changed files
+        #[arg(long)]
+        no_owners_changed: bool,
+        /// Skip owner validation for all files
+        #[arg(long)]
+        no_owners_all: bool,
+        /// Skip lint check
+        #[arg(long)]
+        no_lint: bool,
+    },
 }
 
 #[tokio::main]
@@ -230,5 +258,37 @@ async fn main() -> ExitCode {
             min_files_for_dir: min_files,
             write,
         }),
+        Commands::Gha {
+            token,
+            changed_files_from,
+            changed_files_stdin,
+            no_coverage_changed,
+            no_coverage_all,
+            no_owners_changed,
+            no_owners_all,
+            no_lint,
+        } => {
+            // Read changed files
+            let changed_files =
+                match commands::files::collect_files(None, changed_files_from, changed_files_stdin)
+                {
+                    Ok(f) => f.map(|s| s.into_iter().collect()),
+                    Err(e) => {
+                        eprintln!("::error::{}", e);
+                        return ExitCode::from(1);
+                    }
+                };
+
+            commands::gha(commands::GhaOptions {
+                token,
+                changed_files,
+                check_coverage_changed: !no_coverage_changed,
+                check_coverage_all: !no_coverage_all,
+                check_owners_changed: !no_owners_changed,
+                check_owners_all: !no_owners_all,
+                check_lint: !no_lint,
+            })
+            .await
+        }
     }
 }
