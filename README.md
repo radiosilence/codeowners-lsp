@@ -186,8 +186,9 @@ Groups: `parsing`, `pattern_matching`, `diagnostics`, `file_cache`, `lsp_handler
   - Coverage: count of files without owners
 - **Completions**:
   - fzf-style fuzzy path completions (e.g., `s/m` matches `src/main.rs`)
+  - Snippet completions with owner placeholders (e.g., `src/** @...` → cursor on `@owner`)
   - Owner completions from GitHub API with background validation (trigger: `@`)
-- **Inlay Hints**: Shows how many files each pattern matches
+- **Inlay Hints**: Shows how many files each pattern matches (hover for markdown tooltip)
 - **Code Lens**: Inline file count and owners above each rule
 - **Document Symbols**: Outline view with sections and rules (Cmd+Shift+O)
 - **Workspace Symbols**: Search patterns and owners across file (Cmd+T)
@@ -313,56 +314,57 @@ Override severities in config with: `off`, `hint`, `info`, `warning`, `error`
 
 ## Feature Status
 
-| Feature                                | Status          |
-| -------------------------------------- | --------------- |
-| Hover (ownership info)                 | ✅              |
-| Inlay hints (ownership)                | ✅              |
-| Go-to-definition                       | ✅              |
-| Take ownership actions                 | ✅              |
-| Diagnostics (invalid patterns/owners)  | ✅              |
-| Diagnostics (no matching files)        | ✅              |
-| Diagnostics (shadowed rules)           | ✅              |
-| Diagnostics (duplicate owners)         | ✅              |
-| Diagnostics (no owners)                | ✅              |
-| Coverage reporting                     | ✅              |
-| Path completions                       | ✅              |
-| Owner completions (GitHub API)         | ✅              |
-| GitHub owner validation                | ✅              |
-| CLI: lint                              | ✅              |
-| CLI: check                             | ✅              |
-| CLI: coverage                          | ✅              |
-| CLI: fmt                               | ✅              |
-| Code actions: remove shadowed          | ✅              |
-| Code actions: remove duplicate owners  | ✅              |
-| Code actions: add owner                | ✅              |
-| Code actions: add catch-all            | ✅              |
-| CLI: lint --fix (auto-fix safe issues) | ✅              |
-| LSP: textDocument/formatting           | ✅              |
-| Hover: clickable GitHub links          | ✅              |
-| Code actions: fix all safe issues      | ✅              |
-| Configurable diagnostic severities     | ✅              |
-| Hover: link to CODEOWNERS rule         | ✅              |
-| CLI: validate-owners                   | ✅              |
-| CLI: tree (color-coded by owner)       | ✅              |
-| CLI: shell completions                 | ✅              |
-| Hover: rich team/user metadata         | ✅              |
-| fzf-style fuzzy path completion        | ✅              |
-| Background GitHub validation           | ✅              |
-| Real-time pattern validation           | ✅              |
-| Document symbols (outline view)        | ✅              |
-| Workspace symbols (search)             | ✅              |
-| Folding ranges                         | ✅              |
-| Semantic tokens (syntax highlighting)  | ✅              |
-| Find all references                    | ✅              |
-| Rename symbol                          | ✅              |
-| Code lens                              | ✅              |
-| Signature help (pattern syntax)        | ✅              |
-| Selection range (smart expand)         | ✅              |
-| Linked editing (multi-cursor owners)   | ✅              |
-| Pattern hover (show matches)           | ✅              |
-| Related diagnostics (shadowed links)   | ✅              |
-| CLI: suggest (git-based suggestions)   | ⚠️ experimental |
-| CLI: optimize (pattern consolidation)  | ✅              |
+| Feature                                      | Status          |
+| -------------------------------------------- | --------------- |
+| Hover (ownership info)                       | ✅              |
+| Inlay hints (ownership)                      | ✅              |
+| Go-to-definition                             | ✅              |
+| Take ownership actions                       | ✅              |
+| Diagnostics (invalid patterns/owners)        | ✅              |
+| Diagnostics (no matching files)              | ✅              |
+| Diagnostics (shadowed rules)                 | ✅              |
+| Diagnostics (duplicate owners)               | ✅              |
+| Diagnostics (no owners)                      | ✅              |
+| Coverage reporting                           | ✅              |
+| Path completions                             | ✅              |
+| Snippet completions (with owner placeholder) | ✅              |
+| Owner completions (GitHub API)               | ✅              |
+| GitHub owner validation                      | ✅              |
+| CLI: lint                                    | ✅              |
+| CLI: check                                   | ✅              |
+| CLI: coverage                                | ✅              |
+| CLI: fmt                                     | ✅              |
+| Code actions: remove shadowed                | ✅              |
+| Code actions: remove duplicate owners        | ✅              |
+| Code actions: add owner                      | ✅              |
+| Code actions: add catch-all                  | ✅              |
+| CLI: lint --fix (auto-fix safe issues)       | ✅              |
+| LSP: textDocument/formatting                 | ✅              |
+| Hover: clickable GitHub links                | ✅              |
+| Code actions: fix all safe issues            | ✅              |
+| Configurable diagnostic severities           | ✅              |
+| Hover: link to CODEOWNERS rule               | ✅              |
+| CLI: validate-owners                         | ✅              |
+| CLI: tree (color-coded by owner)             | ✅              |
+| CLI: shell completions                       | ✅              |
+| Hover: rich team/user metadata               | ✅              |
+| fzf-style fuzzy path completion              | ✅              |
+| Background GitHub validation                 | ✅              |
+| Real-time pattern validation                 | ✅              |
+| Document symbols (outline view)              | ✅              |
+| Workspace symbols (search)                   | ✅              |
+| Folding ranges                               | ✅              |
+| Semantic tokens (syntax highlighting)        | ✅              |
+| Find all references                          | ✅              |
+| Rename symbol                                | ✅              |
+| Code lens                                    | ✅              |
+| Signature help (pattern syntax)              | ✅              |
+| Selection range (smart expand)               | ✅              |
+| Linked editing (multi-cursor owners)         | ✅              |
+| Pattern hover (show matches)                 | ✅              |
+| Related diagnostics (shadowed links)         | ✅              |
+| CLI: suggest (git-based suggestions)         | ⚠️ experimental |
+| CLI: optimize (pattern consolidation)        | ✅              |
 
 ## How It Works
 

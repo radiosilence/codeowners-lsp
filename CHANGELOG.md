@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.17.0] - 2026-02-06
+
+### Added
+
+- **Snippet completions** — pattern completions now include snippet variants with owner placeholders. Select `src/** @...` and cursor lands on `@owner` ready to type.
+- **Rich inlay hint tooltips** — hover over file count hints to see markdown-formatted pattern info, match count, and owners.
+
+### Changed
+
+- Enabled `tower-lsp` proposed features for future LSP 3.18 capabilities.
+
 ## [0.16.3] - 2026-02-06
 
 ### Fixed
