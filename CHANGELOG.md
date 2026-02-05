@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.13.0] - 2026-02-05
+
+### Added
+
+- **`check` multi-file support** - Check ownership of multiple files at once:
+
+  ```bash
+  codeowners-cli check src/main.rs src/lib.rs
+  ```
+
+- **`check --json`** - JSON output for CI/scripting:
+
+  ```bash
+  codeowners-cli check --json src/main.rs
+  # {"src/main.rs":{"rule":"*","line":1,"owners":["@team"]}}
+  ```
+
+- **`check --files-from` and `--stdin`** - Bulk file checking for GitHub Actions:
+  ```bash
+  codeowners-cli check --json --files-from changed_files.txt
+  git diff --name-only origin/main | codeowners-cli check --json --stdin
+  ```
+
+Files with no owner return `{"rule": null, "line": null, "owners": []}`. Exit code 0 for multi-file mode even with unowned files.
+
 ## [0.12.6] - 2026-02-03
 
 ### Changed
@@ -57,6 +82,7 @@
 ### Added
 
 - **`coverage` file filtering for CI** - Check ownership of specific files instead of the whole repo:
+
   ```bash
   codeowners-cli coverage --files src/new.rs src/other.rs
   codeowners-cli coverage --files-from changed_files.txt
@@ -85,8 +111,9 @@
 - **`file-not-owned` vs `no-owners` are now distinct** - Previously both cases showed the same error. Now:
   - `file-not-owned` (default: error) - No CODEOWNERS rule matches the file
   - `no-owners` (default: hint) - A rule matches but has no owners specified
-  
+
   This allows disabling one without the other:
+
   ```toml
   [diagnostics]
   no-owners = "off"        # Don't warn about catch-all rules with no owners
@@ -102,10 +129,11 @@
 ### Changed
 
 - **Config: `[suggest]` section** - `lookup_cmd` moved into `[suggest]` section. Update your config:
+
   ```toml
   # Before
   lookup_cmd = "..."
-  
+
   # After
   [suggest]
   lookup_cmd = "..."
@@ -192,6 +220,7 @@ The `optimize` command now uses the corrected pattern engine:
 ### Added - 51 new pattern conformance tests
 
 Comprehensive test suite covering all GitHub CODEOWNERS behaviors:
+
 - Catch-all patterns, extension patterns, anchored/unanchored directories
 - Single vs double star wildcards, case sensitivity
 - Dead rule detection scenarios, edge cases

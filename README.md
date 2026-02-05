@@ -15,6 +15,16 @@ codeowners-cli lint --github-actions  # Output GitHub Actions annotations for PR
 # Check who owns a file
 codeowners-cli check src/main.rs
 
+# Check multiple files
+codeowners-cli check src/main.rs src/lib.rs
+
+# JSON output (for CI/scripting)
+codeowners-cli check --json src/main.rs
+
+# Check files from a list (useful for GitHub Actions)
+codeowners-cli check --json --files-from changed_files.txt
+git diff --name-only origin/main | codeowners-cli check --json --stdin
+
 # Show coverage stats (exits non-zero if uncovered files exist)
 codeowners-cli coverage
 codeowners-cli coverage --tree            # Show unowned files as directory tree
@@ -191,72 +201,72 @@ JSON settings can also be passed via LSP init options (these override TOML confi
 
 ## Diagnostics
 
-| Code                     | Default   | Description                                                                 |
-| ------------------------ | --------- | --------------------------------------------------------------------------- |
-| `invalid-pattern`        | error     | Pattern has invalid glob syntax                                             |
-| `invalid-owner`          | error     | Owner format invalid (must be `@user`, `@org/team`, or email)               |
-| `pattern-no-match`       | warning   | Pattern doesn't match any files in the repository                           |
-| `duplicate-owner`        | warning   | Same owner listed multiple times on one rule                                |
-| `shadowed-rule`          | warning   | Rule is shadowed by a later rule (dead code, last match wins)               |
-| `no-owners`              | hint      | Rule has a pattern but no owners assigned                                   |
-| `file-not-owned`         | error     | File has no matching CODEOWNERS rule (shown on non-CODEOWNERS files)        |
-| `unowned-files`          | info      | Summary diagnostic showing count of files without owners                    |
-| `github-owner-not-found` | warning   | Owner not found on GitHub (requires `validate_owners = true`)               |
+| Code                     | Default | Description                                                          |
+| ------------------------ | ------- | -------------------------------------------------------------------- |
+| `invalid-pattern`        | error   | Pattern has invalid glob syntax                                      |
+| `invalid-owner`          | error   | Owner format invalid (must be `@user`, `@org/team`, or email)        |
+| `pattern-no-match`       | warning | Pattern doesn't match any files in the repository                    |
+| `duplicate-owner`        | warning | Same owner listed multiple times on one rule                         |
+| `shadowed-rule`          | warning | Rule is shadowed by a later rule (dead code, last match wins)        |
+| `no-owners`              | hint    | Rule has a pattern but no owners assigned                            |
+| `file-not-owned`         | error   | File has no matching CODEOWNERS rule (shown on non-CODEOWNERS files) |
+| `unowned-files`          | info    | Summary diagnostic showing count of files without owners             |
+| `github-owner-not-found` | warning | Owner not found on GitHub (requires `validate_owners = true`)        |
 
 Override severities in config with: `off`, `hint`, `info`, `warning`, `error`
 
 ## Feature Status
 
-| Feature                               | Status |
-| ------------------------------------- | ------ |
-| Hover (ownership info)                | ✅     |
-| Inlay hints (ownership)               | ✅     |
-| Go-to-definition                      | ✅     |
-| Take ownership actions                | ✅     |
-| Diagnostics (invalid patterns/owners) | ✅     |
-| Diagnostics (no matching files)       | ✅     |
-| Diagnostics (shadowed rules)          | ✅     |
-| Diagnostics (duplicate owners)        | ✅     |
-| Diagnostics (no owners)               | ✅     |
-| Coverage reporting                    | ✅     |
-| Path completions                      | ✅     |
-| Owner completions (GitHub API)        | ✅     |
-| GitHub owner validation               | ✅     |
-| CLI: lint                             | ✅     |
-| CLI: check                            | ✅     |
-| CLI: coverage                         | ✅     |
-| CLI: fmt                              | ✅     |
-| Code actions: remove shadowed         | ✅     |
-| Code actions: remove duplicate owners | ✅     |
-| Code actions: add owner               | ✅     |
-| Code actions: add catch-all           | ✅     |
-| CLI: lint --fix (auto-fix safe issues)| ✅     |
-| LSP: textDocument/formatting          | ✅     |
-| Hover: clickable GitHub links         | ✅     |
-| Code actions: fix all safe issues     | ✅     |
-| Configurable diagnostic severities    | ✅     |
-| Hover: link to CODEOWNERS rule        | ✅     |
-| CLI: validate-owners                  | ✅     |
-| CLI: tree (color-coded by owner)      | ✅     |
-| CLI: shell completions                | ✅     |
-| Hover: rich team/user metadata        | ✅     |
-| fzf-style fuzzy path completion       | ✅     |
-| Background GitHub validation          | ✅     |
-| Real-time pattern validation          | ✅     |
-| Document symbols (outline view)       | ✅     |
-| Workspace symbols (search)            | ✅     |
-| Folding ranges                        | ✅     |
-| Semantic tokens (syntax highlighting) | ✅     |
-| Find all references                   | ✅     |
-| Rename symbol                         | ✅     |
-| Code lens                             | ✅     |
-| Signature help (pattern syntax)       | ✅     |
-| Selection range (smart expand)        | ✅     |
-| Linked editing (multi-cursor owners)  | ✅     |
-| Pattern hover (show matches)          | ✅     |
-| Related diagnostics (shadowed links)  | ✅     |
-| CLI: suggest (git-based suggestions)  | ⚠️ experimental |
-| CLI: optimize (pattern consolidation) | ✅     |
+| Feature                                | Status          |
+| -------------------------------------- | --------------- |
+| Hover (ownership info)                 | ✅              |
+| Inlay hints (ownership)                | ✅              |
+| Go-to-definition                       | ✅              |
+| Take ownership actions                 | ✅              |
+| Diagnostics (invalid patterns/owners)  | ✅              |
+| Diagnostics (no matching files)        | ✅              |
+| Diagnostics (shadowed rules)           | ✅              |
+| Diagnostics (duplicate owners)         | ✅              |
+| Diagnostics (no owners)                | ✅              |
+| Coverage reporting                     | ✅              |
+| Path completions                       | ✅              |
+| Owner completions (GitHub API)         | ✅              |
+| GitHub owner validation                | ✅              |
+| CLI: lint                              | ✅              |
+| CLI: check                             | ✅              |
+| CLI: coverage                          | ✅              |
+| CLI: fmt                               | ✅              |
+| Code actions: remove shadowed          | ✅              |
+| Code actions: remove duplicate owners  | ✅              |
+| Code actions: add owner                | ✅              |
+| Code actions: add catch-all            | ✅              |
+| CLI: lint --fix (auto-fix safe issues) | ✅              |
+| LSP: textDocument/formatting           | ✅              |
+| Hover: clickable GitHub links          | ✅              |
+| Code actions: fix all safe issues      | ✅              |
+| Configurable diagnostic severities     | ✅              |
+| Hover: link to CODEOWNERS rule         | ✅              |
+| CLI: validate-owners                   | ✅              |
+| CLI: tree (color-coded by owner)       | ✅              |
+| CLI: shell completions                 | ✅              |
+| Hover: rich team/user metadata         | ✅              |
+| fzf-style fuzzy path completion        | ✅              |
+| Background GitHub validation           | ✅              |
+| Real-time pattern validation           | ✅              |
+| Document symbols (outline view)        | ✅              |
+| Workspace symbols (search)             | ✅              |
+| Folding ranges                         | ✅              |
+| Semantic tokens (syntax highlighting)  | ✅              |
+| Find all references                    | ✅              |
+| Rename symbol                          | ✅              |
+| Code lens                              | ✅              |
+| Signature help (pattern syntax)        | ✅              |
+| Selection range (smart expand)         | ✅              |
+| Linked editing (multi-cursor owners)   | ✅              |
+| Pattern hover (show matches)           | ✅              |
+| Related diagnostics (shadowed links)   | ✅              |
+| CLI: suggest (git-based suggestions)   | ⚠️ experimental |
+| CLI: optimize (pattern consolidation)  | ✅              |
 
 ## How It Works
 
@@ -276,6 +286,7 @@ CODEOWNERS uses "last match wins" semantics. If a later rule matches the same fi
 The optimizer works backwards from the end of the file, tracking which patterns could shadow earlier ones. A pattern is shadowed if any later pattern "subsumes" it (matches everything it matches). The catch-all `*` subsumes everything, so any rule before a final `* @team` is dead.
 
 Key subsumption rules:
+
 - `*` and `**` subsume all patterns
 - `/src/` subsumes `/src/lib/` (parent directory contains child)
 - `docs/` (unanchored) subsumes `/docs/` (anchored) - unanchored matches more
@@ -298,6 +309,7 @@ When multiple files in a directory have identical owners:
 ```
 
 Consolidation only triggers when:
+
 - All files in the directory are explicitly listed
 - All have exactly the same owners
 - At least 3 files (configurable with `--min-files`)

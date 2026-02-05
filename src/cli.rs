@@ -55,10 +55,20 @@ enum Commands {
         #[arg(short, long)]
         write: bool,
     },
-    /// Show which rule owns a specific file
+    /// Show which rule owns a specific file (or multiple files)
     Check {
-        /// File path to check ownership of
-        file: String,
+        /// File path(s) to check ownership of
+        #[arg(num_args = 0..)]
+        files: Vec<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Read files to check from a file (one per line)
+        #[arg(long, value_name = "PATH")]
+        files_from: Option<PathBuf>,
+        /// Read files to check from stdin (one per line)
+        #[arg(long)]
+        stdin: bool,
     },
     /// Show files without owners and coverage percentage
     Coverage {
@@ -145,7 +155,12 @@ async fn main() -> ExitCode {
             github_actions,
         } => commands::lint(path, json, fix, strict, github_actions).await,
         Commands::Fmt { path, write } => commands::fmt(path, write),
-        Commands::Check { file } => commands::check(&file),
+        Commands::Check {
+            files,
+            json,
+            files_from,
+            stdin,
+        } => commands::check(files, json, files_from, stdin),
         Commands::Coverage {
             files,
             files_from,
