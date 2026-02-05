@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.15.1] - 2026-02-05
+
+### Changed
+
+- **`gha` output** - Replaced JSON stdout with human-readable terminal summary. JSON data available via `GITHUB_OUTPUT` variables.
+
 ## [0.15.0] - 2026-02-05
 
 ### Added
