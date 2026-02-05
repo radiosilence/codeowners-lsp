@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.14.0] - 2026-02-05
+
+### Added
+
+- **`coverage --json`** - JSON output for coverage stats:
+
+  ```bash
+  codeowners-cli coverage --json
+  # {"total":100,"owned":95,"unowned":5,"coverage_percent":95.0,"unowned_files":["src/foo.rs",...]}
+  ```
+
+- **`validate-owners --json`** - JSON output for owner validation:
+  ```bash
+  codeowners-cli validate-owners --json
+  # {"valid":["@org/team"],"invalid":["@nonexistent"],"unknown":[{"owner":"email@example.com","reason":"..."}]}
+  ```
+
+All commands with meaningful output now support `--json`: `lint`, `check`, `coverage`, `validate-owners`, `suggest`, `optimize`.
+
 ## [0.13.1] - 2026-02-05
 
 ### Added

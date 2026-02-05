@@ -28,6 +28,7 @@ git diff --name-only origin/main | codeowners-cli check --json --stdin
 
 # Show coverage stats (exits non-zero if uncovered files exist)
 codeowners-cli coverage
+codeowners-cli coverage --json            # JSON output for CI
 codeowners-cli coverage --tree            # Show unowned files as directory tree
 
 # Check coverage for specific files (useful for CI on PRs)
@@ -55,6 +56,7 @@ codeowners-cli fmt --write            # Writes in place
 
 # Validate owners against GitHub API
 codeowners-cli validate-owners        # Uses GITHUB_TOKEN env var
+codeowners-cli validate-owners --json # JSON output for CI
 codeowners-cli validate-owners --token ghp_xxx
 
 # Validate only owners relevant to specific files (useful for CI on PRs)

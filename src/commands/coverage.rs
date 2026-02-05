@@ -4,11 +4,21 @@ use std::process::ExitCode;
 use std::{env, fs};
 
 use colored::Colorize;
+use serde::Serialize;
 
 use super::files::collect_files;
 use crate::file_cache::FileCache;
 use crate::ownership::{find_codeowners, get_repo_root};
 use crate::parser;
+
+#[derive(Serialize)]
+struct CoverageJson {
+    total: usize,
+    owned: usize,
+    unowned: usize,
+    coverage_percent: f64,
+    unowned_files: Vec<String>,
+}
 
 /// Generate a visual progress bar
 fn progress_bar(percentage: f64, width: usize) -> String {
@@ -125,6 +135,7 @@ pub fn coverage(
     files_from: Option<PathBuf>,
     stdin: bool,
     tree: bool,
+    json: bool,
 ) -> ExitCode {
     let cwd = env::current_dir().expect("Failed to get current directory");
 
@@ -184,6 +195,26 @@ pub fn coverage(
     } else {
         100.0
     };
+
+    // JSON output
+    if json {
+        let output = CoverageJson {
+            total: total_files,
+            owned: owned_count,
+            unowned: unowned.len(),
+            coverage_percent: (coverage_pct * 10.0).round() / 10.0, // 1 decimal place
+            unowned_files: unowned.iter().map(|s| s.to_string()).collect(),
+        };
+        println!(
+            "{}",
+            serde_json::to_string(&output).expect("Failed to serialize JSON")
+        );
+        return if unowned.is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        };
+    }
 
     // Color the percentage based on coverage level
     let pct_colored = if coverage_pct >= 90.0 {

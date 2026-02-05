@@ -7,6 +7,7 @@ use std::{env, fs};
 use colored::Colorize;
 use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
+use serde::Serialize;
 
 use super::files::collect_files;
 use crate::github::GitHubClient;
@@ -23,11 +24,25 @@ enum ValidationResult {
     Unknown(String, &'static str),
 }
 
+#[derive(Serialize)]
+struct ValidateOwnersJson {
+    valid: Vec<String>,
+    invalid: Vec<String>,
+    unknown: Vec<UnknownOwner>,
+}
+
+#[derive(Serialize)]
+struct UnknownOwner {
+    owner: String,
+    reason: String,
+}
+
 pub async fn validate_owners(
     token: &str,
     files: Option<Vec<String>>,
     files_from: Option<PathBuf>,
     stdin: bool,
+    json: bool,
 ) -> ExitCode {
     let cwd = env::current_dir().expect("Failed to get current directory");
 
@@ -151,6 +166,30 @@ pub async fn validate_owners(
     valid.sort();
     invalid.sort();
     unknown.sort_by_key(|(o, _)| *o);
+
+    // JSON output
+    if json {
+        let output = ValidateOwnersJson {
+            valid: valid.iter().map(|s| s.to_string()).collect(),
+            invalid: invalid.iter().map(|s| s.to_string()).collect(),
+            unknown: unknown
+                .iter()
+                .map(|(owner, reason)| UnknownOwner {
+                    owner: owner.to_string(),
+                    reason: reason.to_string(),
+                })
+                .collect(),
+        };
+        println!(
+            "{}",
+            serde_json::to_string(&output).expect("Failed to serialize JSON")
+        );
+        return if !invalid.is_empty() {
+            ExitCode::from(1)
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
 
     // Print results
     for owner in &valid {

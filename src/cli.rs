@@ -87,6 +87,9 @@ enum Commands {
         /// Show unowned files as a directory tree with per-directory counts
         #[arg(long)]
         tree: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Generate shell completions
     Completions {
@@ -108,6 +111,9 @@ enum Commands {
         /// Read files to filter by from stdin (one per line)
         #[arg(long)]
         stdin: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show all files color-coded by owner
     Tree,
@@ -170,7 +176,8 @@ async fn main() -> ExitCode {
             files_from,
             stdin,
             tree,
-        } => commands::coverage(files, files_from, stdin, tree),
+            json,
+        } => commands::coverage(files, files_from, stdin, tree, json),
         Commands::Completions { shell } => {
             generate(
                 shell,
@@ -185,7 +192,8 @@ async fn main() -> ExitCode {
             files,
             files_from,
             stdin,
-        } => commands::validate_owners(&token, files, files_from, stdin).await,
+            json,
+        } => commands::validate_owners(&token, files, files_from, stdin, json).await,
         Commands::Tree => commands::tree(),
         Commands::Config => commands::config(),
         Commands::Suggest {
