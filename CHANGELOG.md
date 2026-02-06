@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.15.5] - 2026-02-06
+
+### Fixed
+
+- **Bulletproof inline comment handling** - Inline comments (`*.rs @owner # contact info`) are now correctly handled across the entire codebase:
+  - Parser tracks comment boundary position on each line
+  - Formatter preserves inline comments through roundtrip formatting
+  - `find_owner_at_position` no longer returns `@mentions` inside comments
+  - Semantic tokens emit proper comment highlighting for inline comment text
+  - Diagnostics and rename operations are bounded to the non-comment portion of lines
+
+- **Username validation** - Removed `_` (underscore) from allowed characters in GitHub username/team regexes. GitHub usernames only allow alphanumeric characters and hyphens.
+
 ## [0.15.4] - 2026-02-06
 
 ### Fixed
