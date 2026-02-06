@@ -1,15 +1,17 @@
-mod blame;
 mod commands;
-mod diagnostics;
-mod file_cache;
-mod github;
-mod lookup;
-mod ownership;
-mod parser;
-mod pattern;
-mod settings;
-#[allow(dead_code)]
-mod validation;
+
+// Re-export shared modules so `crate::*` paths in commands/ submodules still resolve
+use codeowners_lsp as lib;
+pub use lib::blame;
+pub use lib::diagnostics;
+pub use lib::file_cache;
+pub use lib::github;
+pub use lib::lookup;
+pub use lib::ownership;
+pub use lib::parser;
+pub use lib::pattern;
+pub use lib::settings;
+pub use lib::validation;
 
 use std::io;
 use std::path::PathBuf;
