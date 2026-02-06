@@ -61,7 +61,11 @@ pub fn parse_codeowners_file_with_positions(content: &str) -> Vec<ParsedLine> {
                     owners_start: 0,
                 }
             } else {
-                let parts: Vec<&str> = line.split_whitespace().collect();
+                // Split by whitespace, stopping at # (end-of-line comment)
+                let parts: Vec<&str> = line
+                    .split_whitespace()
+                    .take_while(|part| !part.starts_with('#'))
+                    .collect();
                 if parts.is_empty() {
                     ParsedLine {
                         line_number: line_num as u32,
@@ -380,6 +384,19 @@ mod tests {
     #[test]
     fn test_parse_rule_single_owner() {
         let lines = parse_codeowners_file("*.rs @rustacean");
+        assert_eq!(lines.len(), 1);
+        match &lines[0] {
+            CodeownersLine::Rule { pattern, owners } => {
+                assert_eq!(pattern, "*.rs");
+                assert_eq!(owners, &vec!["@rustacean".to_string()]);
+            }
+            _ => panic!("Expected Rule"),
+        }
+    }
+
+    #[test]
+    fn test_parse_rule_single_owner_line_comment() {
+        let lines = parse_codeowners_file("*.rs @rustacean # only rust people should touch rust");
         assert_eq!(lines.len(), 1);
         match &lines[0] {
             CodeownersLine::Rule { pattern, owners } => {
