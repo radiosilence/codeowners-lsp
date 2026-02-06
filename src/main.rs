@@ -1075,7 +1075,7 @@ impl LanguageServer for Backend {
                 }),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(
-                    true,
+                    false,
                 )),
                 ..Default::default()
             },

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.16.1] - 2026-02-06
+
+### Fixed
+
+- **Linked editing disabled** — was editing ALL occurrences of an owner across the entire file when you just wanted to change one line. Use rename (F2) for intentional cross-file renames.
+
 ## [0.16.0] - 2026-02-06
 
 Performance optimizations across pattern matching, diagnostics, and file cache — driven by the new criterion benchmark suite.
