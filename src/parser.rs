@@ -112,7 +112,7 @@ pub fn parse_codeowners_file_with_positions(content: &str) -> Vec<ParsedLine> {
 
 /// Find the char offset of an inline comment on a rule line.
 /// An inline comment starts with `#` that is preceded by whitespace.
-pub(crate) fn find_inline_comment_start(line: &str) -> Option<usize> {
+pub fn find_inline_comment_start(line: &str) -> Option<usize> {
     let mut in_whitespace = true;
     for (i, c) in line.chars().enumerate() {
         if c == '#' && in_whitespace {

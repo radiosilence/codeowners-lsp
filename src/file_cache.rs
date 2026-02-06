@@ -35,6 +35,15 @@ pub struct FileCache {
 }
 
 impl FileCache {
+    /// Create a FileCache from a pre-built file list (for testing/benchmarks)
+    pub fn from_files(files: Vec<String>) -> Self {
+        Self {
+            files,
+            count_cache: RwLock::new(HashMap::new()),
+            has_match_cache: RwLock::new(HashSet::new()),
+        }
+    }
+
     /// Create a new FileCache using git ls-files to get tracked files
     pub fn new(root: &PathBuf) -> Self {
         let files = Command::new("git")

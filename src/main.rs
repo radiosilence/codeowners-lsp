@@ -1,12 +1,14 @@
-mod diagnostics;
-mod file_cache;
-mod github;
-mod handlers;
-mod ownership;
-mod parser;
-mod pattern;
-mod settings;
-mod validation;
+// Re-export shared modules so `crate::*` paths still resolve within this binary
+use codeowners_lsp as lib;
+pub use lib::diagnostics;
+pub use lib::file_cache;
+pub use lib::github;
+pub use lib::handlers;
+pub use lib::ownership;
+pub use lib::parser;
+pub use lib::pattern;
+pub use lib::settings;
+pub use lib::validation;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;

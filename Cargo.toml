@@ -8,6 +8,10 @@ license = "MIT"
 keywords = ["codeowners", "language-server", "lsp"]
 categories = ["development-tools"]
 
+[lib]
+name = "codeowners_lsp"
+path = "src/lib.rs"
+
 [[bin]]
 name = "codeowners-lsp"
 path = "src/main.rs"
@@ -15,6 +19,26 @@ path = "src/main.rs"
 [[bin]]
 name = "codeowners-cli"
 path = "src/cli.rs"
+
+[[bench]]
+harness = false
+name = "parsing"
+
+[[bench]]
+harness = false
+name = "pattern_matching"
+
+[[bench]]
+harness = false
+name = "diagnostics"
+
+[[bench]]
+harness = false
+name = "file_cache"
+
+[[bench]]
+harness = false
+name = "lsp_handlers"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -39,5 +63,7 @@ toml = "0.9"
 tower-lsp = "0.20"
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.8"
 tempfile = "3"
 wiremock = "0.6"

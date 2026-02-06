@@ -9,12 +9,16 @@ cargo build          # dev build
 cargo build --release
 cargo clippy         # NO warnings allowed
 cargo fmt            # always run after changes
+cargo bench          # run full benchmark suite
+cargo bench --bench parsing  # run a single benchmark group
+./scripts/bench-summary.sh   # print summary table from last run
 ```
 
 ## Architecture
 
 ```
 src/
+├── lib.rs           # Shared library crate (re-exports all shared modules)
 ├── main.rs          # LSP entry + Backend struct + LanguageServer trait impl
 ├── cli.rs           # CLI entry point
 ├── handlers/        # LSP-only request handlers
@@ -87,7 +91,8 @@ Key structs:
 
 ## Key Gotchas
 
-- Two binaries share code: use `#[allow(dead_code)]` for functions only used by one binary
+- Shared code lives in `src/lib.rs` (lib crate); binaries re-export via `pub use`
+- `#[allow(dead_code)]` still needed for functions only called from one binary context
 - GitHub usernames: alphanumeric, hyphens, underscores only (NO periods)
 - CODEOWNERS does NOT support `[...]` character classes or `!` negation (unlike gitignore)
 - Owner matching in handlers must use forward search with word boundaries, not `find()`/`rfind()`

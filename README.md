@@ -154,6 +154,18 @@ The command produces:
 - `--no-summary` - Don't write step summary
 - `--no-outputs` - Don't write output variables
 
+## Benchmarks
+
+Criterion benchmarks cover parsing, pattern matching, diagnostics, file cache, and handler functions against synthetic data (1000 rules, 50k files).
+
+```bash
+cargo bench                    # full suite
+cargo bench --bench parsing    # single group
+./scripts/bench-summary.sh     # summary table from last run
+```
+
+Groups: `parsing`, `pattern_matching`, `diagnostics`, `file_cache`, `lsp_handlers`
+
 ## LSP Features
 
 ### In Any File
