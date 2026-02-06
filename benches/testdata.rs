@@ -376,7 +376,7 @@ pub fn content_with_n_rules(data: &TestData, n: usize) -> String {
             continue;
         }
         lines.push(line.to_string());
-        if lines.len() - 1 >= n {
+        if lines.len() > n {
             break;
         }
     }
