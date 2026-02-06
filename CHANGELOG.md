@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.16.0] - 2026-02-06
+
+Performance optimizations across pattern matching, diagnostics, and file cache — driven by the new criterion benchmark suite.
+
+### Added
+
+- **Criterion benchmark suite** — 5 benchmark files covering parsing, pattern matching, diagnostics, file cache, and LSP handlers. Generates a 1000-rule CODEOWNERS and 50k synthetic file paths with seeded RNG for deterministic, reproducible benchmarking.
+- **`scripts/bench-summary.sh`** — prints a human-readable table of all benchmark medians from criterion JSON output.
+
+### Performance
+
+- **Extension pattern matching: -95.4%** (10.94ms → 500us for 50k files) — new `ExtensionSuffix` variant in `CompiledPattern` uses `ends_with` instead of glob matching for `*.ext` patterns.
+- **Directory pattern matching: -69.7%** (10.67ms → 3.23ms for 50k files) — eliminated `format!("/{}/", dir)` allocation per path in `UnanchoredDirectory` matching, replaced with byte-level segment boundary checks.
+- **Diagnostics (1000 rules, no cache): -78.5%** (39.8ms → 8.5ms) — skip already-shadowed patterns in the O(n²) subsumption loop; fast-path catch-all patterns (`*`/`**`) that trivially subsume everything.
+- **Diagnostics (1000 rules, with cache): -74.4%** (41.5ms → 10.6ms) — same subsumption improvements.
+- **get_unowned_files: -86.4%** (8.07ms → 1.10ms) — `count_matches`/`has_matches`/`get_matches` now compile to `CompiledPattern` once per call instead of re-parsing per file.
+- **count_matches cold: -27.3%** (1.73ms → 1.26ms) — same compile-once optimization.
+- **check_file_ownership_parsed: -61.0%** (45.6us → 17.8us) — benefits from pattern matching improvements.
+
+### Changed
+
+- Shared code extracted to lib crate (`src/lib.rs`) — enables criterion benchmarks to import internal modules. Both binaries re-export via `pub use`.
+
 ## [0.15.5] - 2026-02-06
 
 Comprehensive code audit (Opus 4.6 reviewing Opus 4.5's work) plus bulletproof inline comment handling.

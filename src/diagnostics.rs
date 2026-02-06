@@ -79,8 +79,8 @@ pub fn compute_diagnostics_sync(
     // Use HashMap for O(1) exact duplicate detection
     let mut exact_patterns: std::collections::HashMap<String, u32> =
         std::collections::HashMap::new();
-    // Only store patterns that could subsume others (wildcards, directories)
-    let mut subsume_patterns: Vec<(String, u32)> = Vec::new();
+    // Store patterns for subsumption checking: (pattern, line_number, already_shadowed)
+    let mut subsume_patterns: Vec<(String, u32, bool)> = Vec::new();
 
     // Collect owners to validate via GitHub (line, offset, owner, len)
     let mut owners_to_validate: Vec<(u32, u32, String, u32)> = Vec::new();
@@ -246,16 +246,26 @@ pub fn compute_diagnostics_sync(
                 if let Some(severity) =
                     config.get(codes::SHADOWED_RULE, DiagnosticSeverity::WARNING)
                 {
-                    for (prev_pattern, prev_line) in &subsume_patterns {
+                    let stripped = pattern.trim_start_matches('/');
+                    let is_catchall = stripped == "*" || stripped == "**";
+
+                    for (prev_pattern, prev_line, already_shadowed) in &mut subsume_patterns {
+                        // Skip already-shadowed patterns
+                        if *already_shadowed {
+                            continue;
+                        }
                         // Skip if this is the same line (exact duplicate already reported)
                         if *prev_line == parsed_line.line_number {
                             continue;
                         }
                         // Skip exact duplicates - already reported above
-                        if prev_pattern.trim_start_matches('/') == pattern.trim_start_matches('/') {
+                        if prev_pattern.trim_start_matches('/') == stripped {
                             continue;
                         }
-                        if pattern_subsumes(prev_pattern, pattern) {
+                        // Fast path: catch-all subsumes everything
+                        let subsumed = is_catchall || pattern_subsumes(prev_pattern, pattern);
+                        if subsumed {
+                            *already_shadowed = true;
                             diagnostics.push(Diagnostic {
                                 range: Range {
                                     start: Position {
@@ -287,7 +297,7 @@ pub fn compute_diagnostics_sync(
             exact_patterns.insert(normalized_pattern.to_string(), parsed_line.line_number);
 
             // Track ALL patterns for shadowing detection - any pattern can be shadowed by * or **
-            subsume_patterns.push((pattern.to_string(), parsed_line.line_number));
+            subsume_patterns.push((pattern.to_string(), parsed_line.line_number, false));
 
             // Check for rules without owners
             if owners.is_empty() {

@@ -4,6 +4,8 @@ pub enum CompiledPattern {
     MatchAll,
     /// Anchored /* - matches only root-level files
     RootFilesOnly,
+    /// Extension suffix like .rs (from *.rs) - simple ends_with check
+    ExtensionSuffix(String),
     /// Single-segment glob like *.rs - needs **/ prefix for matching
     SingleSegmentGlob(String),
     /// Multi-segment glob like src/**/*.rs
@@ -31,8 +33,14 @@ impl CompiledPattern {
 
         // Patterns with wildcards
         if pattern.contains('*') {
-            // Unanchored single-segment like *.rs -> **/*.rs
+            // Unanchored single-segment like *.rs
             if !anchored && !pattern.contains('/') {
+                // Fast path: *.ext patterns use suffix check (no glob needed)
+                if let Some(ext) = pattern.strip_prefix('*') {
+                    if !ext.contains('*') && !ext.contains('?') {
+                        return CompiledPattern::ExtensionSuffix(ext.to_string());
+                    }
+                }
                 return CompiledPattern::SingleSegmentGlob(format!("**/{}", pattern));
             }
             return CompiledPattern::MultiSegmentGlob(pattern.to_string());
@@ -61,6 +69,11 @@ impl CompiledPattern {
         match self {
             CompiledPattern::MatchAll => true,
             CompiledPattern::RootFilesOnly => !path.contains('/'),
+            CompiledPattern::ExtensionSuffix(ext) => {
+                path.ends_with(ext.as_str())
+                    && (path.len() == ext.len()
+                        || path.as_bytes()[path.len() - ext.len() - 1] != b'/')
+            }
             CompiledPattern::SingleSegmentGlob(glob) => fast_glob::glob_match(glob, path),
             CompiledPattern::MultiSegmentGlob(glob) => fast_glob::glob_match(glob, path),
             CompiledPattern::AnchoredDirectory(dir) => {
@@ -74,17 +87,14 @@ impl CompiledPattern {
                 {
                     return true;
                 }
-                // Match anywhere: look for /dir/ in path
-                let search = format!("/{}/", dir);
-                if path.contains(&search) {
-                    return true;
-                }
-                // Match /dir at various positions
+                // Match anywhere: check each path segment boundary
+                let dir_bytes = dir.as_bytes();
+                let path_bytes = path.as_bytes();
                 for (i, _) in path.match_indices('/') {
-                    let rest = &path[i + 1..];
-                    if rest.starts_with(dir.as_str())
-                        && (rest.len() == dir.len()
-                            || rest.as_bytes().get(dir.len()) == Some(&b'/'))
+                    let rest = &path_bytes[i + 1..];
+                    if rest.len() >= dir_bytes.len()
+                        && &rest[..dir_bytes.len()] == dir_bytes
+                        && (rest.len() == dir_bytes.len() || rest[dir_bytes.len()] == b'/')
                     {
                         return true;
                     }
@@ -139,6 +149,12 @@ pub fn pattern_matches(pattern: &str, path: &str) -> bool {
 
         // Single-segment patterns like *.rs (unanchored) match at any depth
         if !anchored && !pattern.contains('/') {
+            // Fast path: *.ext is just a suffix check
+            if let Some(ext) = pattern.strip_prefix('*') {
+                return path.ends_with(ext)
+                    && (path.len() == ext.len()
+                        || path.as_bytes()[path.len() - ext.len() - 1] != b'/');
+            }
             let glob_pattern = format!("**/{}", pattern);
             return fast_glob::glob_match(&glob_pattern, path);
         }
@@ -157,27 +173,19 @@ pub fn pattern_matches(pattern: &str, path: &str) -> bool {
                 && (path.len() == dir.len() || path.as_bytes().get(dir.len()) == Some(&b'/'));
         } else {
             // docs/ - matches any directory named "docs" anywhere
-            // Convert to **/docs/** pattern for matching
-            // Match if path contains /docs/ or starts with docs/
             if path.starts_with(dir)
                 && (path.len() == dir.len() || path.as_bytes().get(dir.len()) == Some(&b'/'))
             {
                 return true;
             }
-            // Check for /dir/ anywhere in path
-            let search = format!("/{}/", dir);
-            if path.contains(&search) {
-                return true;
-            }
-            // Check for /dir at end followed by content
-            let search_prefix = format!("/{}/", dir);
+            // Check each path segment boundary (no allocations)
+            let dir_bytes = dir.as_bytes();
+            let path_bytes = path.as_bytes();
             for (i, _) in path.match_indices('/') {
-                if path[i..].starts_with(&search_prefix)
-                    || (path[i + 1..].starts_with(dir)
-                        && path
-                            .as_bytes()
-                            .get(i + 1 + dir.len())
-                            .is_some_and(|&b| b == b'/'))
+                let rest = &path_bytes[i + 1..];
+                if rest.len() >= dir_bytes.len()
+                    && &rest[..dir_bytes.len()] == dir_bytes
+                    && (rest.len() == dir_bytes.len() || rest[dir_bytes.len()] == b'/')
                 {
                     return true;
                 }

@@ -7,7 +7,7 @@ use std::sync::RwLock;
 use rayon::prelude::*;
 
 use crate::parser::{CodeownersLine, ParsedLine};
-use crate::pattern::{pattern_matches, CompiledPattern};
+use crate::pattern::CompiledPattern;
 
 /// Check if characters in needle appear in order in haystack (fuzzy match)
 fn fuzzy_match(haystack: &str, needle: &str) -> bool {
@@ -77,12 +77,9 @@ impl FileCache {
             }
         }
 
-        // Compute and cache
-        let count = self
-            .files
-            .iter()
-            .filter(|f| pattern_matches(pattern, f))
-            .count();
+        // Compile pattern once, then iterate
+        let compiled = CompiledPattern::new(pattern);
+        let count = self.files.iter().filter(|f| compiled.matches(f)).count();
 
         self.count_cache
             .write()
@@ -118,8 +115,9 @@ impl FileCache {
             }
         }
 
-        // Compute (early exit on first match)
-        let has_match = self.files.iter().any(|f| pattern_matches(pattern, f));
+        // Compile once, early exit on first match
+        let compiled = CompiledPattern::new(pattern);
+        let has_match = self.files.iter().any(|f| compiled.matches(f));
 
         if has_match {
             self.has_match_cache
@@ -197,10 +195,8 @@ impl FileCache {
     /// Get files matching a pattern
     #[allow(dead_code)]
     pub fn get_matches(&self, pattern: &str) -> Vec<&String> {
-        self.files
-            .iter()
-            .filter(|f| pattern_matches(pattern, f))
-            .collect()
+        let compiled = CompiledPattern::new(pattern);
+        self.files.iter().filter(|f| compiled.matches(f)).collect()
     }
 
     /// Get all files for completions
