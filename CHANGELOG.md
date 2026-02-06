@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.15.4] - 2026-02-06
+
+### Fixed
+
+- **Comment support** - End of line comments were breaking the parsing
+
 ## [0.15.3] - 2026-02-05
 
 ### Fixed
