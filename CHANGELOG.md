@@ -2,16 +2,42 @@
 
 ## [0.15.5] - 2026-02-06
 
+Comprehensive code audit (Opus 4.6 reviewing Opus 4.5's work) plus bulletproof inline comment handling.
+
+### Security
+
+- **Command injection in lookup.rs** - Email from git shortlog was interpolated directly into shell commands. Now sanitized to allow only safe characters before substitution.
+
 ### Fixed
 
-- **Bulletproof inline comment handling** - Inline comments (`*.rs @owner # contact info`) are now correctly handled across the entire codebase:
+- **Inline comment handling** - Inline comments (`*.rs @owner # contact info`) now handled correctly everywhere:
   - Parser tracks comment boundary position on each line
   - Formatter preserves inline comments through roundtrip formatting
   - `find_owner_at_position` no longer returns `@mentions` inside comments
   - Semantic tokens emit proper comment highlighting for inline comment text
-  - Diagnostics and rename operations are bounded to the non-comment portion of lines
+  - Diagnostics and rename operations bounded to the non-comment portion of lines
 
-- **Username validation** - Removed `_` (underscore) from allowed characters in GitHub username/team regexes. GitHub usernames only allow alphanumeric characters and hyphens.
+- **Username validation** - Removed `_` and `.` from allowed characters in GitHub username/team regexes. GitHub usernames only allow alphanumeric characters and hyphens.
+
+- **find_nth_owner_position** - Linked editing, find references, and rename all used vec index instead of occurrence count, producing wrong positions when an owner appears multiple times on a line.
+
+- **prepare_rename wrong highlight** - Used `line.find()` which always matched the first occurrence regardless of cursor position. Now scans forward checking word boundaries.
+
+- **rfind in semantic tokens** - `line.rfind(owner)` always found the last occurrence, corrupting delta calculations for duplicate owners. Replaced with forward search.
+
+- **blame.rs crash paths** - `parse().ok()?` aborted all results on a single malformed shortlog line (now skips). `partial_cmp().unwrap()` could panic on NaN (now `total_cmp()`). Directory prefix matching lacked `/` boundary check.
+
+- **Section header detection** - Dead code in symbols, semantic tokens, and selection handlers. Comments include `#` prefix so the check always failed. Fixed to strip `#` first.
+
+- **Unsupported `[...]` syntax** - Removed character class references from signature help docs and semantic token highlighting. CODEOWNERS does not support character classes.
+
+- **selection.rs dedup without sort** - `dedup()` only removes adjacent duplicates; added `sort_by` first.
+
+- **Code lens empty owners** - Trailing separator when rule has no owners.
+
+### Performance
+
+- **Parse-once optimization** - `tree` and `check` commands re-parsed CODEOWNERS for every file. Extracted `check_file_ownership_parsed()` that takes pre-parsed lines.
 
 ## [0.15.4] - 2026-02-06
 
