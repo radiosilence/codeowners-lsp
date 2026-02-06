@@ -24,7 +24,8 @@ src/
 │   ├── lens.rs      # code_lens
 │   ├── signature.rs # signature_help
 │   ├── selection.rs # selection_range
-│   └── linked.rs    # linked_editing_range
+│   ├── linked.rs    # linked_editing_range
+│   └── util.rs      # shared helpers (find_nth_owner_position)
 ├── commands/        # CLI-only commands
 │   ├── suggest.rs   # suggest owners from git history
 │   ├── optimize.rs  # consolidate patterns
@@ -83,3 +84,11 @@ Key structs:
   "validate_owners": false
 }
 ```
+
+## Key Gotchas
+
+- Two binaries share code: use `#[allow(dead_code)]` for functions only used by one binary
+- GitHub usernames: alphanumeric, hyphens, underscores only (NO periods)
+- CODEOWNERS does NOT support `[...]` character classes or `!` negation (unlike gitignore)
+- Owner matching in handlers must use forward search with word boundaries, not `find()`/`rfind()`
+- `check_file_ownership_parsed()` exists for hot loops; `check_file_ownership()` re-parses each call

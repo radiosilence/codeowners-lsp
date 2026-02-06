@@ -39,13 +39,22 @@ pub struct OwnershipResult {
 }
 
 /// Check which rule in a CODEOWNERS file owns a specific file
+#[allow(dead_code)] // Used by LSP binary only
 pub fn check_file_ownership(content: &str, file_path: &str) -> Option<OwnershipResult> {
     let lines = parse_codeowners_file_with_positions(content);
+    check_file_ownership_parsed(&lines, file_path)
+}
+
+/// Check ownership against pre-parsed lines (avoids re-parsing in loops)
+pub fn check_file_ownership_parsed(
+    lines: &[crate::parser::ParsedLine],
+    file_path: &str,
+) -> Option<OwnershipResult> {
     let file_path = file_path.trim_start_matches("./");
 
     // Find matching rule (last match wins)
     let mut matching_rule = None;
-    for parsed_line in &lines {
+    for parsed_line in lines {
         if let CodeownersLine::Rule { pattern, owners } = &parsed_line.content {
             if pattern_matches(pattern, file_path) {
                 matching_rule = Some(OwnershipResult {

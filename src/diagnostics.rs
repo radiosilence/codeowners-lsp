@@ -400,7 +400,12 @@ fn calculate_owner_offset(
     } else {
         let line_text = content.lines().nth(parsed_line.line_number as usize);
         if let Some(text) = line_text {
-            text.find(owner).unwrap_or(0) as u32
+            // Only search within the non-comment portion of the line
+            let search_text: String = match parsed_line.comment_start {
+                Some(cs) => text.chars().take(cs as usize).collect(),
+                None => text.to_string(),
+            };
+            search_text.find(owner).unwrap_or(0) as u32
         } else {
             parsed_line.owners_start
         }

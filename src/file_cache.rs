@@ -376,6 +376,7 @@ mod tests {
             pattern_start: 0,
             pattern_end: 4,
             owners_start: 5,
+            comment_start: None,
         }];
 
         let unowned = cache.get_unowned_files(&rules);
@@ -399,6 +400,7 @@ mod tests {
             pattern_start: 0,
             pattern_end: 1,
             owners_start: 2,
+            comment_start: None,
         }];
 
         let unowned = cache.get_unowned_files(&rules);
@@ -616,6 +618,7 @@ mod tests {
                 pattern_start: 0,
                 pattern_end: 0,
                 owners_start: 0,
+                comment_start: None,
             },
             ParsedLine {
                 line_number: 1,
@@ -626,6 +629,7 @@ mod tests {
                 pattern_start: 0,
                 pattern_end: 4,
                 owners_start: 5,
+                comment_start: None,
             },
             ParsedLine {
                 line_number: 2,
@@ -633,6 +637,7 @@ mod tests {
                 pattern_start: 0,
                 pattern_end: 0,
                 owners_start: 0,
+                comment_start: None,
             },
         ];
 

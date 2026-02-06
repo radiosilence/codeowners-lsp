@@ -7,7 +7,8 @@ use colored::Colorize;
 use serde::Serialize;
 
 use super::files::collect_files;
-use crate::ownership::{check_file_ownership, find_codeowners};
+use crate::ownership::{check_file_ownership_parsed, find_codeowners};
+use crate::parser::parse_codeowners_file_with_positions;
 
 #[derive(Serialize)]
 struct CheckResultJson {
@@ -73,10 +74,11 @@ pub fn check(
 }
 
 fn output_json(content: &str, files: &[String]) -> ExitCode {
+    let parsed = parse_codeowners_file_with_positions(content);
     let mut results: HashMap<&str, CheckResultJson> = HashMap::new();
 
     for file_path in files {
-        let result = check_file_ownership(content, file_path);
+        let result = check_file_ownership_parsed(&parsed, file_path);
         results.insert(
             file_path,
             match result {
@@ -104,6 +106,7 @@ fn output_json(content: &str, files: &[String]) -> ExitCode {
 }
 
 fn output_human(content: &str, files: &[String]) -> ExitCode {
+    let parsed = parse_codeowners_file_with_positions(content);
     let mut any_unowned = false;
 
     for (i, file_path) in files.iter().enumerate() {
@@ -111,7 +114,7 @@ fn output_human(content: &str, files: &[String]) -> ExitCode {
             println!();
         }
 
-        match check_file_ownership(content, file_path) {
+        match check_file_ownership_parsed(&parsed, file_path) {
             Some(result) => {
                 println!("{} {}", "File:".bold(), file_path);
                 println!(

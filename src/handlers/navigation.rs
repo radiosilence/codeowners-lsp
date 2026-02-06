@@ -6,6 +6,8 @@ use tower_lsp::lsp_types::*;
 
 use crate::parser::{find_owner_at_position, parse_codeowners_file_with_positions, CodeownersLine};
 
+use super::util::find_nth_owner_position;
+
 /// Find all references to an owner in CODEOWNERS file
 pub fn find_references(content: &str, position: Position, uri: &Url) -> Option<Vec<Location>> {
     let lines: Vec<&str> = content.lines().collect();
@@ -30,10 +32,11 @@ pub fn find_references(content: &str, position: Position, uri: &Url) -> Option<V
             ..
         } = &parsed_line.content
         {
-            for (idx, o) in line_owners.iter().enumerate() {
+            let line_text = lines.get(parsed_line.line_number as usize).unwrap_or(&"");
+            let mut occurrence = 0;
+            for o in line_owners.iter() {
                 if o == &owner {
-                    let line_text = lines.get(parsed_line.line_number as usize).unwrap_or(&"");
-                    if let Some(pos) = find_nth_owner_position(line_text, &owner, idx) {
+                    if let Some(pos) = find_nth_owner_position(line_text, &owner, occurrence) {
                         locations.push(Location {
                             uri: uri.clone(),
                             range: Range {
@@ -48,6 +51,7 @@ pub fn find_references(content: &str, position: Position, uri: &Url) -> Option<V
                             },
                         });
                     }
+                    occurrence += 1;
                 }
             }
         }
@@ -74,17 +78,41 @@ pub fn prepare_rename(content: &str, position: Position) -> Option<Range> {
     // Only allow renaming @owners
     let owner = find_owner_at_position(line, char_idx)?;
 
-    // Find the range of this owner
-    line.find(&owner).map(|start_pos| Range {
-        start: Position {
-            line: position.line,
-            character: start_pos as u32,
-        },
-        end: Position {
-            line: position.line,
-            character: (start_pos + owner.len()) as u32,
-        },
-    })
+    // Find the occurrence of this owner that contains the cursor.
+    // We can't just use line.find() because that always returns the first occurrence.
+    let mut start = 0;
+    while let Some(pos) = line[start..].find(&owner) {
+        let abs_pos = start + pos;
+        let end_pos = abs_pos + owner.len();
+        // Check word boundary
+        let before_ok = abs_pos == 0
+            || line
+                .as_bytes()
+                .get(abs_pos - 1)
+                .map(|&b| b == b' ' || b == b'\t')
+                .unwrap_or(true);
+        let after_ok = end_pos >= line.len()
+            || line
+                .as_bytes()
+                .get(end_pos)
+                .map(|&b| b == b' ' || b == b'\t')
+                .unwrap_or(true);
+
+        if before_ok && after_ok && char_idx >= abs_pos && char_idx < end_pos {
+            return Some(Range {
+                start: Position {
+                    line: position.line,
+                    character: abs_pos as u32,
+                },
+                end: Position {
+                    line: position.line,
+                    character: end_pos as u32,
+                },
+            });
+        }
+        start = abs_pos + 1;
+    }
+    None
 }
 
 /// Rename an owner across all rules
@@ -114,10 +142,11 @@ pub fn rename_owner(
             ..
         } = &parsed_line.content
         {
-            for (idx, o) in line_owners.iter().enumerate() {
+            let line_text = lines.get(parsed_line.line_number as usize).unwrap_or(&"");
+            let mut occurrence = 0;
+            for o in line_owners.iter() {
                 if o == &old_owner {
-                    let line_text = lines.get(parsed_line.line_number as usize).unwrap_or(&"");
-                    if let Some(pos) = find_nth_owner_position(line_text, &old_owner, idx) {
+                    if let Some(pos) = find_nth_owner_position(line_text, &old_owner, occurrence) {
                         edits.push(TextEdit {
                             range: Range {
                                 start: Position {
@@ -132,6 +161,7 @@ pub fn rename_owner(
                             new_text: new_name.to_string(),
                         });
                     }
+                    occurrence += 1;
                 }
             }
         }
@@ -147,35 +177,4 @@ pub fn rename_owner(
             ..Default::default()
         })
     }
-}
-
-/// Find the nth occurrence of an owner string in a line
-fn find_nth_owner_position(line: &str, owner: &str, n: usize) -> Option<usize> {
-    let mut count = 0;
-    let mut start = 0;
-    while let Some(pos) = line[start..].find(owner) {
-        let abs_pos = start + pos;
-        // Verify it's a whole word (not part of pattern)
-        let before_ok = abs_pos == 0
-            || line
-                .chars()
-                .nth(abs_pos - 1)
-                .map(|c| c.is_whitespace())
-                .unwrap_or(true);
-        let after_ok = abs_pos + owner.len() >= line.len()
-            || line
-                .chars()
-                .nth(abs_pos + owner.len())
-                .map(|c| c.is_whitespace())
-                .unwrap_or(true);
-
-        if before_ok && after_ok {
-            if count == n {
-                return Some(abs_pos);
-            }
-            count += 1;
-        }
-        start = abs_pos + 1;
-    }
-    None
 }

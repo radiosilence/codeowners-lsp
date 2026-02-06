@@ -4,6 +4,8 @@ use tower_lsp::lsp_types::*;
 
 use crate::parser::{find_owner_at_position, parse_codeowners_file_with_positions, CodeownersLine};
 
+use super::util::find_nth_owner_position;
+
 /// Find all ranges where the same owner appears for linked editing
 pub fn linked_editing_ranges(content: &str, position: Position) -> Option<LinkedEditingRanges> {
     let lines: Vec<&str> = content.lines().collect();
@@ -31,9 +33,10 @@ pub fn linked_editing_ranges(content: &str, position: Position) -> Option<Linked
         {
             let line_text = lines.get(parsed_line.line_number as usize).unwrap_or(&"");
 
-            for (idx, o) in line_owners.iter().enumerate() {
+            let mut occurrence = 0;
+            for o in line_owners.iter() {
                 if o == &owner {
-                    if let Some(pos) = find_nth_owner_position(line_text, &owner, idx) {
+                    if let Some(pos) = find_nth_owner_position(line_text, &owner, occurrence) {
                         ranges.push(Range {
                             start: Position {
                                 line: parsed_line.line_number,
@@ -45,6 +48,7 @@ pub fn linked_editing_ranges(content: &str, position: Position) -> Option<Linked
                             },
                         });
                     }
+                    occurrence += 1;
                 }
             }
         }
@@ -59,37 +63,6 @@ pub fn linked_editing_ranges(content: &str, position: Position) -> Option<Linked
         ranges,
         word_pattern: None,
     })
-}
-
-/// Find the nth occurrence of an owner string in a line
-fn find_nth_owner_position(line: &str, owner: &str, n: usize) -> Option<usize> {
-    let mut count = 0;
-    let mut start = 0;
-    while let Some(pos) = line[start..].find(owner) {
-        let abs_pos = start + pos;
-        // Verify it's a whole word (not part of pattern)
-        let before_ok = abs_pos == 0
-            || line
-                .chars()
-                .nth(abs_pos - 1)
-                .map(|c| c.is_whitespace())
-                .unwrap_or(true);
-        let after_ok = abs_pos + owner.len() >= line.len()
-            || line
-                .chars()
-                .nth(abs_pos + owner.len())
-                .map(|c| c.is_whitespace())
-                .unwrap_or(true);
-
-        if before_ok && after_ok {
-            if count == n {
-                return Some(abs_pos);
-            }
-            count += 1;
-        }
-        start = abs_pos + 1;
-    }
-    None
 }
 
 #[cfg(test)]
@@ -136,5 +109,25 @@ mod tests {
             },
         );
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_linked_editing_duplicate_owners_on_same_line() {
+        // Regression: duplicate owners on the same line must all be found
+        let content = "*.rs @alice @bob @alice\n*.js @alice";
+        let result = linked_editing_ranges(
+            content,
+            Position {
+                line: 0,
+                character: 6, // cursor on first @alice
+            },
+        );
+        assert!(result.is_some());
+        let ranges = result.unwrap().ranges;
+        // Should find: line 0 pos 5, line 0 pos 17, line 1 pos 5
+        assert_eq!(ranges.len(), 3, "Expected 3 ranges, got {:?}", ranges);
+        assert_eq!(ranges[0].start.character, 5); // first @alice on line 0
+        assert_eq!(ranges[1].start.character, 17); // second @alice on line 0
+        assert_eq!(ranges[2].start.line, 1); // @alice on line 1
     }
 }

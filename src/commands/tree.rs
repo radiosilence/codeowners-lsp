@@ -5,7 +5,8 @@ use std::{env, fs};
 use colored::{Color, Colorize};
 
 use crate::file_cache::FileCache;
-use crate::ownership::{check_file_ownership, find_codeowners, get_repo_root};
+use crate::ownership::{check_file_ownership_parsed, find_codeowners, get_repo_root};
+use crate::parser::parse_codeowners_file_with_positions;
 
 /// Generate a consistent color from a string
 fn owner_color(owner: &str) -> Color {
@@ -52,12 +53,13 @@ pub fn tree() -> ExitCode {
 
     let repo_root = get_repo_root(&codeowners_path, &cwd);
     let file_cache = FileCache::new(&repo_root);
+    let parsed_lines = parse_codeowners_file_with_positions(&content);
 
     // Collect all files with their owners
     let mut files_with_owners: Vec<(String, Option<String>)> = Vec::new();
 
     for file in file_cache.all_files() {
-        let owners = check_file_ownership(&content, file).map(|r| r.owners.join(" "));
+        let owners = check_file_ownership_parsed(&parsed_lines, file).map(|r| r.owners.join(" "));
         files_with_owners.push((file.clone(), owners));
     }
 

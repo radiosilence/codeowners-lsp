@@ -822,6 +822,7 @@ mod tests {
             pattern_start: 0,
             pattern_end: pattern.len() as u32,
             owners_start: pattern.len() as u32 + 1,
+            comment_start: None,
         }
     }
 

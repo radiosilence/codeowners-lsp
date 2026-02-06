@@ -2,9 +2,8 @@ use glob::Pattern;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-static TEAM_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^@[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$").unwrap());
-static USER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@[a-zA-Z0-9_-]+$").unwrap());
+static TEAM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@[a-zA-Z0-9-]+/[a-zA-Z0-9-]+$").unwrap());
+static USER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@[a-zA-Z0-9-]+$").unwrap());
 static EMAIL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$").unwrap());
 
 /// Validate an owner format - returns error message if invalid
@@ -46,7 +45,6 @@ mod tests {
     fn test_valid_user() {
         assert!(validate_owner("@username").is_none());
         assert!(validate_owner("@user-name").is_none());
-        assert!(validate_owner("@user_name").is_none());
         assert!(validate_owner("@user123").is_none());
     }
 
@@ -54,7 +52,13 @@ mod tests {
     fn test_valid_team() {
         assert!(validate_owner("@org/team").is_none());
         assert!(validate_owner("@my-org/my-team").is_none());
-        assert!(validate_owner("@org_name/team_name").is_none());
+    }
+
+    #[test]
+    fn test_invalid_owner_with_underscore() {
+        // GitHub usernames/orgs don't allow underscores
+        assert!(validate_owner("@user_name").is_some());
+        assert!(validate_owner("@org_name/team_name").is_some());
     }
 
     #[test]
@@ -62,6 +66,13 @@ mod tests {
         assert!(validate_owner("user@example.com").is_none());
         assert!(validate_owner("user.name@domain.co.uk").is_none());
         assert!(validate_owner("user+tag@example.org").is_none());
+    }
+
+    #[test]
+    fn test_invalid_owner_with_period() {
+        // GitHub usernames/orgs don't allow periods
+        assert!(validate_owner("@user.name").is_some());
+        assert!(validate_owner("@org.name/team").is_some());
     }
 
     #[test]

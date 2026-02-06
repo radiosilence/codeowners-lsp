@@ -189,7 +189,7 @@ pub fn coverage(
             )
         };
 
-    let owned_count = total_files - unowned.len();
+    let owned_count = total_files.saturating_sub(unowned.len());
     let coverage_pct = if total_files > 0 {
         (owned_count as f64 / total_files as f64) * 100.0
     } else {

@@ -20,11 +20,6 @@ const PATTERN_DOCS: &[(&str, &str, &str)] = &[
         "Matches exactly one character. Example: `file?.txt` matches file1.txt, fileA.txt.",
     ),
     (
-        "[...]",
-        "Match character class",
-        "Matches any character in brackets. Example: `[abc].txt` matches a.txt, b.txt, c.txt.",
-    ),
-    (
         "/",
         "Directory separator / anchor",
         "Leading `/` anchors to repo root. Example: `/src/` only matches top-level src directory.",
@@ -51,10 +46,8 @@ pub fn signature_help(line: &str, character: usize) -> Option<SignatureHelp> {
         Some(0) // *
     } else if before_cursor.ends_with('?') {
         Some(2) // ?
-    } else if before_cursor.contains('[') && !before_cursor.contains(']') {
-        Some(3) // [...]
     } else if before_cursor.starts_with('/') && before_cursor.len() == 1 {
-        Some(4) // /
+        Some(3) // /
     } else {
         None
     };
@@ -102,6 +95,22 @@ mod tests {
         let help = signature_help("file?.txt", 5);
         assert!(help.is_some());
         assert_eq!(help.unwrap().active_signature, Some(2));
+    }
+
+    #[test]
+    fn test_signature_help_slash() {
+        let help = signature_help("/", 1);
+        assert!(help.is_some());
+        assert_eq!(help.unwrap().active_signature, Some(3));
+    }
+
+    #[test]
+    fn test_signature_help_bracket_not_supported() {
+        // Character classes are not supported in CODEOWNERS
+        let help = signature_help("[abc", 4);
+        assert!(help.is_some());
+        // Should NOT match any signature (no character class docs)
+        assert!(help.unwrap().active_signature.is_none());
     }
 
     #[test]

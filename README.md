@@ -183,7 +183,7 @@ The command produces:
 - **Semantic Highlighting**: Syntax colors for patterns, owners, globs, comments
 - **Find References**: Find all rules containing an owner
 - **Rename**: Rename an owner across all rules
-- **Signature Help**: Pattern syntax documentation while typing (`*`, `**`, `?`, `[...]`)
+- **Signature Help**: Pattern syntax documentation while typing (`*`, `**`, `?`, `/`)
 - **Selection Range**: Smart expand selection (word → owner → all owners → rule → section)
 - **Linked Editing**: Edit an owner and all occurrences update simultaneously
 - **Pattern Hover**: Hover over patterns to see matching files

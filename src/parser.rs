@@ -9,6 +9,8 @@ pub struct ParsedLine {
     pub pattern_end: u32,
     /// Character offset where owners start
     pub owners_start: u32,
+    /// Character offset where inline comment starts (the # character), if present
+    pub comment_start: Option<u32>,
 }
 
 /// Represents a parsed line from a CODEOWNERS file
@@ -51,6 +53,7 @@ pub fn parse_codeowners_file_with_positions(content: &str) -> Vec<ParsedLine> {
                     pattern_start: 0,
                     pattern_end: 0,
                     owners_start: 0,
+                    comment_start: None,
                 }
             } else if trimmed.starts_with('#') {
                 ParsedLine {
@@ -59,6 +62,7 @@ pub fn parse_codeowners_file_with_positions(content: &str) -> Vec<ParsedLine> {
                     pattern_start: 0,
                     pattern_end: 0,
                     owners_start: 0,
+                    comment_start: None,
                 }
             } else {
                 // Split by whitespace, stopping at # (end-of-line comment)
@@ -66,6 +70,10 @@ pub fn parse_codeowners_file_with_positions(content: &str) -> Vec<ParsedLine> {
                     .split_whitespace()
                     .take_while(|part| !part.starts_with('#'))
                     .collect();
+
+                // Find the inline comment position (first # that's a separate whitespace-delimited token)
+                let comment_start = find_inline_comment_start(line).map(|pos| pos as u32);
+
                 if parts.is_empty() {
                     ParsedLine {
                         line_number: line_num as u32,
@@ -73,6 +81,7 @@ pub fn parse_codeowners_file_with_positions(content: &str) -> Vec<ParsedLine> {
                         pattern_start: 0,
                         pattern_end: 0,
                         owners_start: 0,
+                        comment_start: None,
                     }
                 } else {
                     // Find pattern position
@@ -93,11 +102,25 @@ pub fn parse_codeowners_file_with_positions(content: &str) -> Vec<ParsedLine> {
                         pattern_start,
                         pattern_end,
                         owners_start,
+                        comment_start,
                     }
                 }
             }
         })
         .collect()
+}
+
+/// Find the char offset of an inline comment on a rule line.
+/// An inline comment starts with `#` that is preceded by whitespace.
+pub(crate) fn find_inline_comment_start(line: &str) -> Option<usize> {
+    let mut in_whitespace = true;
+    for (i, c) in line.chars().enumerate() {
+        if c == '#' && in_whitespace {
+            return Some(i);
+        }
+        in_whitespace = c == ' ' || c == '\t';
+    }
+    None
 }
 
 /// Parse a CODEOWNERS file into structured lines (without positions)
@@ -271,21 +294,21 @@ pub fn find_owner_at_position(line: &str, char_idx: usize) -> Option<String> {
         return None;
     }
 
-    // Find all potential owners in the line
+    // Stop scanning at inline comment boundary
+    let scan_end = find_inline_comment_start(line).unwrap_or(line.chars().count());
+
+    // Find all potential owners in the non-comment portion
     let mut owners: Vec<(usize, usize, String)> = Vec::new();
     let mut i = 0;
     let chars: Vec<char> = line.chars().collect();
 
-    while i < chars.len() {
+    while i < chars.len() && i < scan_end {
         if chars[i] == '@' {
             let start = i;
             i += 1;
-            // Collect owner chars (alphanumeric, -, _, /)
+            // Collect owner chars (alphanumeric, -, /)
             while i < chars.len()
-                && (chars[i].is_alphanumeric()
-                    || chars[i] == '-'
-                    || chars[i] == '_'
-                    || chars[i] == '/')
+                && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '/')
             {
                 i += 1;
             }
@@ -332,8 +355,11 @@ pub fn format_codeowners(content: &str) -> String {
             continue;
         }
 
-        // Rules: normalize spacing between pattern and owners
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        // Rules: normalize spacing between pattern and owners, preserve inline comments
+        let parts: Vec<&str> = trimmed
+            .split_whitespace()
+            .take_while(|part| !part.starts_with('#'))
+            .collect();
         if parts.is_empty() {
             continue;
         }
@@ -341,11 +367,27 @@ pub fn format_codeowners(content: &str) -> String {
         let pattern = parts[0];
         let owners = &parts[1..];
 
-        if owners.is_empty() {
-            result.push(pattern.to_string());
+        // Find inline comment in the original line
+        let inline_comment = find_inline_comment_start(line).map(|char_off| {
+            line.chars()
+                .skip(char_off)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        });
+
+        let mut formatted = if owners.is_empty() {
+            pattern.to_string()
         } else {
-            result.push(format!("{} {}", pattern, owners.join(" ")));
+            format!("{} {}", pattern, owners.join(" "))
+        };
+
+        if let Some(comment) = inline_comment {
+            formatted.push(' ');
+            formatted.push_str(&comment);
         }
+
+        result.push(formatted);
     }
 
     // Ensure trailing newline
@@ -576,14 +618,14 @@ mod tests {
 
     #[test]
     fn test_find_owner_at_position_special_chars() {
-        let line = "*.rs @user-name @user_name2";
+        let line = "*.rs @user-name @org/team";
         assert_eq!(
             find_owner_at_position(line, 5),
             Some("@user-name".to_string())
         );
         assert_eq!(
             find_owner_at_position(line, 16),
-            Some("@user_name2".to_string())
+            Some("@org/team".to_string())
         );
     }
 
@@ -730,5 +772,85 @@ mod tests {
         // Should handle gracefully
         assert!(formatted.contains("*.rs @owner"));
         assert!(formatted.contains("/src/ @team"));
+    }
+
+    // --- Inline comment tests ---
+
+    #[test]
+    fn test_find_inline_comment_start() {
+        assert_eq!(find_inline_comment_start("*.rs @owner # comment"), Some(12));
+        assert_eq!(find_inline_comment_start("*.rs @owner"), None);
+        assert_eq!(find_inline_comment_start("# full line comment"), Some(0));
+        assert_eq!(find_inline_comment_start("*.rs @owner #nospace"), Some(12));
+    }
+
+    #[test]
+    fn test_find_inline_comment_start_hash_in_token() {
+        // # attached to a token (no preceding whitespace) is NOT an inline comment
+        assert_eq!(find_inline_comment_start("*.rs @owner#attached"), None);
+    }
+
+    #[test]
+    fn test_parse_inline_comment_stripped_from_owners() {
+        let lines = parse_codeowners_file("*.rs @owner # contact @admin for changes");
+        assert_eq!(lines.len(), 1);
+        match &lines[0] {
+            CodeownersLine::Rule { owners, .. } => {
+                assert_eq!(owners, &vec!["@owner".to_string()]);
+            }
+            _ => panic!("Expected Rule"),
+        }
+    }
+
+    #[test]
+    fn test_parse_inline_comment_position_stored() {
+        let lines = parse_codeowners_file_with_positions("*.rs @owner # comment");
+        assert_eq!(lines[0].comment_start, Some(12));
+    }
+
+    #[test]
+    fn test_parse_no_inline_comment() {
+        let lines = parse_codeowners_file_with_positions("*.rs @owner");
+        assert_eq!(lines[0].comment_start, None);
+    }
+
+    #[test]
+    fn test_find_owner_at_position_inline_comment_ignored() {
+        let line = "*.rs @owner # contact @admin";
+        // @owner should be found
+        assert_eq!(find_owner_at_position(line, 5), Some("@owner".to_string()));
+        // @admin is in the comment, should NOT be found
+        assert_eq!(find_owner_at_position(line, 22), None);
+    }
+
+    #[test]
+    fn test_find_owner_at_position_inline_comment_no_space() {
+        let line = "*.rs @owner #comment @nope";
+        assert_eq!(find_owner_at_position(line, 5), Some("@owner".to_string()));
+        assert_eq!(find_owner_at_position(line, 21), None);
+    }
+
+    #[test]
+    fn test_format_preserves_inline_comments() {
+        let input = "*.rs    @owner1   @owner2   # important note";
+        let formatted = format_codeowners(input);
+        assert_eq!(formatted, "*.rs @owner1 @owner2 # important note\n");
+    }
+
+    #[test]
+    fn test_format_preserves_inline_comment_no_owners() {
+        let input = "/unowned/ # deliberately unowned";
+        let formatted = format_codeowners(input);
+        assert_eq!(formatted, "/unowned/ # deliberately unowned\n");
+    }
+
+    #[test]
+    fn test_format_roundtrip_with_inline_comments() {
+        let input = "# Header\n*.rs @owner # rust files\n/src/ @team # source dir\n";
+        let formatted = format_codeowners(input);
+        assert_eq!(
+            formatted,
+            "# Header\n*.rs @owner # rust files\n/src/ @team # source dir\n"
+        );
     }
 }

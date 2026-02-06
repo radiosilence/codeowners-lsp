@@ -16,10 +16,9 @@ pub fn document_symbols(content: &str) -> Vec<DocumentSymbol> {
         match &line.content {
             CodeownersLine::Comment(text) => {
                 // Check if this is a section header (e.g., "# Section Name")
-                let trimmed = text.trim();
-                if !trimmed.is_empty()
-                    && !trimmed.starts_with('#')
-                    && trimmed
+                let section_text = text.trim().trim_start_matches('#').trim();
+                if !section_text.is_empty()
+                    && section_text
                         .chars()
                         .next()
                         .map(|c| c.is_uppercase())
@@ -67,7 +66,8 @@ pub fn document_symbols(content: &str) -> Vec<DocumentSymbol> {
                         });
                     }
                     // Start new section
-                    current_section = Some((trimmed.to_string(), line.line_number, Vec::new()));
+                    current_section =
+                        Some((section_text.to_string(), line.line_number, Vec::new()));
                 }
             }
             CodeownersLine::Rule { pattern, owners } => {

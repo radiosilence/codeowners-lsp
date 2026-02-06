@@ -13,12 +13,17 @@ pub fn code_lenses(content: &str, file_cache: &FileCache) -> Vec<CodeLens> {
     for line in &lines {
         if let CodeownersLine::Rule { pattern, owners } = &line.content {
             let count = file_cache.count_matches(pattern);
-            let title = format!(
-                "{} {} · {}",
-                count,
-                if count == 1 { "file" } else { "files" },
-                owners.join(" ")
-            );
+            let owners_str = owners.join(" ");
+            let title = if owners_str.is_empty() {
+                format!("{} {}", count, if count == 1 { "file" } else { "files" })
+            } else {
+                format!(
+                    "{} {} · {}",
+                    count,
+                    if count == 1 { "file" } else { "files" },
+                    owners_str
+                )
+            };
 
             lenses.push(CodeLens {
                 range: Range {

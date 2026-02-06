@@ -2,7 +2,9 @@
 
 use tower_lsp::lsp_types::*;
 
-use crate::parser::{parse_codeowners_file_with_positions, CodeownersLine};
+use crate::parser::{
+    find_inline_comment_start, parse_codeowners_file_with_positions, CodeownersLine,
+};
 
 /// Generate semantic tokens for syntax highlighting
 pub fn semantic_tokens(content: &str) -> Vec<SemanticToken> {
@@ -38,8 +40,13 @@ pub fn semantic_tokens(content: &str) -> Vec<SemanticToken> {
             continue;
         }
 
-        // Parse rule: pattern owners...
-        let parts: Vec<&str> = line.split_whitespace().collect();
+        // Parse rule: pattern owners... (stop at inline comment)
+        let all_parts: Vec<&str> = line.split_whitespace().collect();
+        let parts: Vec<&str> = all_parts
+            .iter()
+            .take_while(|part| !part.starts_with('#'))
+            .copied()
+            .collect();
         if parts.is_empty() {
             continue;
         }
@@ -55,7 +62,7 @@ pub fn semantic_tokens(content: &str) -> Vec<SemanticToken> {
 
             while char_idx < pattern_chars.len() {
                 let c = pattern_chars[char_idx];
-                if c == '*' || c == '?' || c == '[' || c == ']' {
+                if c == '*' || c == '?' {
                     // Operator (glob char)
                     let abs_pos = pattern_start + char_idx as u32;
                     data.push(SemanticToken {
@@ -76,7 +83,7 @@ pub fn semantic_tokens(content: &str) -> Vec<SemanticToken> {
             }
 
             // Highlight the whole pattern as string if no globs
-            if !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[') {
+            if !pattern.contains('*') && !pattern.contains('?') {
                 data.push(SemanticToken {
                     delta_line: line_num - prev_line,
                     delta_start: if line_num == prev_line {
@@ -93,10 +100,13 @@ pub fn semantic_tokens(content: &str) -> Vec<SemanticToken> {
             }
         }
 
-        // Highlight owners
+        // Highlight owners using forward search to handle duplicates correctly
+        let mut owner_search_start = 0;
         for &owner in &parts[1..] {
-            if let Some(owner_start) = line.rfind(owner) {
-                let owner_start = owner_start as u32;
+            // Find the next occurrence of this owner at or after owner_search_start
+            if let Some(rel_pos) = line[owner_search_start..].find(owner) {
+                let owner_start = (owner_search_start + rel_pos) as u32;
+                owner_search_start = owner_search_start + rel_pos + owner.len();
                 let token_type = if owner.starts_with('@') {
                     if owner.contains('/') {
                         3 // class (team)
@@ -121,6 +131,25 @@ pub fn semantic_tokens(content: &str) -> Vec<SemanticToken> {
                 prev_line = line_num;
                 prev_char = owner_start;
             }
+        }
+
+        // Highlight inline comment if present
+        if let Some(comment_char_off) = find_inline_comment_start(line) {
+            let comment_len = line.chars().count() - comment_char_off;
+            let comment_start = comment_char_off as u32;
+            data.push(SemanticToken {
+                delta_line: line_num - prev_line,
+                delta_start: if line_num == prev_line {
+                    comment_start - prev_char
+                } else {
+                    comment_start
+                },
+                length: comment_len as u32,
+                token_type: 0, // comment
+                token_modifiers_bitset: 0,
+            });
+            prev_line = line_num;
+            prev_char = comment_start;
         }
     }
 
@@ -167,9 +196,9 @@ pub fn folding_ranges(content: &str) -> Vec<FoldingRange> {
     let mut section_start: Option<u32> = None;
     for line in &lines {
         if let CodeownersLine::Comment(text) = &line.content {
-            let trimmed = text.trim();
-            if !trimmed.is_empty()
-                && trimmed
+            let section_text = text.trim().trim_start_matches('#').trim();
+            if !section_text.is_empty()
+                && section_text
                     .chars()
                     .next()
                     .map(|c| c.is_uppercase())

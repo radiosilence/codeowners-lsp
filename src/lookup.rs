@@ -98,7 +98,19 @@ impl OwnerLookup {
 
     /// Run the lookup command for an email
     fn run_lookup(&self, email: &str) -> Option<String> {
-        let cmd = self.cmd_template.replace("{email}", email);
+        // Sanitize email: only allow safe characters to prevent shell injection.
+        // Git author emails can be user-configured and could contain shell metacharacters.
+        let safe_email: String = email
+            .chars()
+            .filter(|c| c.is_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+'))
+            .collect();
+
+        if safe_email.is_empty() || safe_email != email {
+            // Email contained unsafe characters, skip lookup
+            return None;
+        }
+
+        let cmd = self.cmd_template.replace("{email}", &safe_email);
 
         // Run through shell to support pipes
         let output = Command::new("sh").arg("-c").arg(&cmd).output().ok()?;

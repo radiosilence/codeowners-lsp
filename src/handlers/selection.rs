@@ -12,12 +12,11 @@ pub fn selection_ranges(content: &str, positions: &[Position]) -> Vec<SelectionR
 
     positions
         .iter()
-        .map(|pos| build_selection_range(content, &lines, &parsed, *pos))
+        .map(|pos| build_selection_range(&lines, &parsed, *pos))
         .collect()
 }
 
 fn build_selection_range(
-    _content: &str,
     lines: &[&str],
     parsed: &[crate::parser::ParsedLine],
     position: Position,
@@ -130,7 +129,15 @@ fn build_selection_range(
         },
     });
 
-    // Deduplicate ranges
+    // Deduplicate ranges (sort first so dedup catches non-consecutive duplicates)
+    ranges.sort_by(|a, b| {
+        a.start
+            .line
+            .cmp(&b.start.line)
+            .then(a.start.character.cmp(&b.start.character))
+            .then(a.end.line.cmp(&b.end.line))
+            .then(a.end.character.cmp(&b.end.character))
+    });
     ranges.dedup();
 
     // Build nested SelectionRange structure (innermost first)
@@ -215,9 +222,9 @@ fn find_section_bounds(parsed: &[crate::parser::ParsedLine], line: u32) -> Optio
             break;
         }
         if let CodeownersLine::Comment(text) = &pl.content {
-            let trimmed = text.trim();
-            if !trimmed.is_empty()
-                && trimmed
+            let section_text = text.trim().trim_start_matches('#').trim();
+            if !section_text.is_empty()
+                && section_text
                     .chars()
                     .next()
                     .map(|c| c.is_uppercase())
@@ -238,9 +245,9 @@ fn find_section_bounds(parsed: &[crate::parser::ParsedLine], line: u32) -> Optio
             continue;
         }
         if let CodeownersLine::Comment(text) = &pl.content {
-            let trimmed = text.trim();
-            if !trimmed.is_empty()
-                && trimmed
+            let section_text = text.trim().trim_start_matches('#').trim();
+            if !section_text.is_empty()
+                && section_text
                     .chars()
                     .next()
                     .map(|c| c.is_uppercase())

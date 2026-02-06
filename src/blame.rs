@@ -154,10 +154,11 @@ pub fn suggest_owners_for_files(
             .unwrap_or_default();
 
         // Skip if parent directory already has a suggestion
-        if covered_dirs
-            .iter()
-            .any(|d| parent_dir.starts_with(d.trim_end_matches('/')))
-        {
+        // Compare with trailing / to avoid "src-extra/" matching "src/"
+        if covered_dirs.iter().any(|d| {
+            let prefix = d.trim_end_matches('/');
+            parent_dir == format!("{}/", prefix) || parent_dir.starts_with(&format!("{}/", prefix))
+        }) {
             continue;
         }
 
@@ -170,7 +171,7 @@ pub fn suggest_owners_for_files(
     }
 
     // Sort by confidence (highest first)
-    suggestions.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+    suggestions.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
 
     suggestions
 }
@@ -192,7 +193,10 @@ fn parse_shortlog_output(output: &str, path: &str) -> Option<OwnerSuggestion> {
             continue;
         }
 
-        let count: usize = parts[0].trim().parse().ok()?;
+        let count: usize = match parts[0].trim().parse() {
+            Ok(c) => c,
+            Err(_) => continue, // skip malformed lines instead of aborting all results
+        };
         let author = parts[1].trim();
 
         // Parse "Name <email>"
@@ -382,20 +386,22 @@ mod tests {
 
     #[test]
     fn test_parse_shortlog_invalid_count() {
-        // Non-numeric commit count
+        // Non-numeric commit count - skipped, no valid lines remain
         let output = "   abc\tUser <user@test.com>\n";
         let result = parse_shortlog_output(output, "file.rs");
-        // parse().ok()? returns None, so entire function returns None
         assert!(result.is_none());
     }
 
     #[test]
     fn test_parse_shortlog_mixed_valid_invalid() {
-        // First line valid, second has invalid count - should stop at invalid
+        // First line valid, second has invalid count - should skip bad line, keep good one
         let output = "    10\tAlice <alice@test.com>\n   bad\tBob <bob@test.com>\n";
         let result = parse_shortlog_output(output, "file.rs");
-        // Returns None because of parse failure
-        assert!(result.is_none());
+        assert!(result.is_some());
+        let suggestion = result.unwrap();
+        assert_eq!(suggestion.contributors.len(), 1);
+        assert_eq!(suggestion.contributors[0].name, "Alice");
+        assert_eq!(suggestion.total_commits, 10);
     }
 
     #[test]
@@ -405,6 +411,26 @@ mod tests {
 
         // suggested_owner is empty by default, filled later by suggest command
         assert_eq!(suggestion.suggested_owner, "");
+    }
+
+    #[test]
+    fn test_parse_shortlog_all_invalid_counts() {
+        // Every line has bad count - should return None
+        let output = "   abc\tAlice <a@test.com>\n   xyz\tBob <b@test.com>\n";
+        assert!(parse_shortlog_output(output, "file.rs").is_none());
+    }
+
+    #[test]
+    fn test_parse_shortlog_invalid_between_valid() {
+        // Bad line sandwiched between good ones - only good lines kept
+        let output =
+            "    10\tAlice <a@test.com>\n   bad\tEvil <e@test.com>\n     5\tBob <b@test.com>\n";
+        let suggestion = parse_shortlog_output(output, "file.rs").unwrap();
+        assert_eq!(suggestion.contributors.len(), 2);
+        assert_eq!(suggestion.total_commits, 15);
+        // Alice has more commits, should be first after sort
+        assert_eq!(suggestion.contributors[0].name, "Alice");
+        assert_eq!(suggestion.contributors[1].name, "Bob");
     }
 
     #[test]
