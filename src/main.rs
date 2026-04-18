@@ -22,7 +22,9 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use diagnostics::{compute_diagnostics_sync, DiagnosticConfig};
 use file_cache::FileCache;
 use github::{GitHubClient, PersistentCache};
-use ownership::{apply_safe_fixes, check_file_ownership, check_file_ownership_parsed, find_codeowners};
+use ownership::{
+    apply_safe_fixes, check_file_ownership, check_file_ownership_parsed, find_codeowners,
+};
 use parser::{
     find_insertion_point_with_owner, find_owner_at_position, format_codeowners,
     parse_codeowners_file, parse_codeowners_file_with_positions, serialize_codeowners,
