@@ -231,7 +231,7 @@ fn parse_shortlog_output(output: &str, path: &str) -> Option<OwnerSuggestion> {
     }
 
     // Sort by commit count (highest first)
-    contributors.sort_by(|a, b| b.commit_count.cmp(&a.commit_count));
+    contributors.sort_by_key(|c| std::cmp::Reverse(c.commit_count));
 
     // Determine confidence
     let top_contributor = &contributors[0];
