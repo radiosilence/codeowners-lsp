@@ -55,11 +55,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all
 
-  # Matrix build (on main after tests pass)
+  # Matrix build — runs on PRs (no release) and on main (with release)
   build:
     name: Build ${{ matrix.target }}
     needs: [check, clippy, fmt, test]
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -122,10 +121,11 @@ jobs:
           name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
           path: ${{ env.BINARY_NAME }}-${{ matrix.target }}.${{ matrix.archive }}
 
-  # Check if version changed
+  # Check if version changed (main only — releases don't fire on PRs)
   check-version:
     name: Check Version
     needs: [build]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.check.outputs.should_release }}
