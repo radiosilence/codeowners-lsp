@@ -1,3 +1,10 @@
+//! Syntactic validation for CODEOWNERS owners and glob patterns.
+//!
+//! These checks are _syntactic only_ — they confirm the shape of an owner
+//! (`@user`, `@org/team`, or `email@host`) or the well-formedness of a glob
+//! pattern. They do not verify that the user/team exists on GitHub or that
+//! the pattern actually matches any files in the repository.
+
 use glob::Pattern;
 use once_cell::sync::Lazy;
 use regex::Regex;

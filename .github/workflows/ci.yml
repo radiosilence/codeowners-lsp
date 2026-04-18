@@ -138,7 +138,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          CURRENT=$(grep '^version' crates/codeowners-lsp/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "Current version: $CURRENT"
           echo "version=$CURRENT" >> $GITHUB_OUTPUT
 

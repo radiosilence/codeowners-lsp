@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.18.0] - 2026-04-18
+
+### Added
+
+- **New `codeowners-parser` crate** — standalone library at
+  [`crates/codeowners-parser`](crates/codeowners-parser), extracted from
+  the LSP. Parsing, pattern matching, validation, and ownership resolution
+  are now independent of any LSP/CLI concerns. Fills the gap left by the
+  abandoned `codeowners` crate on crates.io.
+- Workspace layout: `crates/codeowners-parser` + `crates/codeowners-lsp`.
+
+### Changed
+
+- Repository reshaped as a Cargo workspace. The `codeowners-lsp` package
+  moved to `crates/codeowners-lsp/`; binaries and behavior unchanged.
+- LSP depends on `codeowners-parser` via path; public API of the LSP's
+  library re-exports the parser's `parser`, `pattern`, and `validation`
+  modules so downstream imports keep working.
+
 ## [0.17.4] - 2026-04-18
 
 ### Security
