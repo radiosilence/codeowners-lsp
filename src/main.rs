@@ -15,7 +15,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use codeowners::Owners;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -23,11 +22,13 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use diagnostics::{compute_diagnostics_sync, DiagnosticConfig};
 use file_cache::FileCache;
 use github::{GitHubClient, PersistentCache};
-use ownership::{apply_safe_fixes, check_file_ownership};
+use ownership::{
+    apply_safe_fixes, check_file_ownership, check_file_ownership_parsed, find_codeowners,
+};
 use parser::{
     find_insertion_point_with_owner, find_owner_at_position, format_codeowners,
     parse_codeowners_file, parse_codeowners_file_with_positions, serialize_codeowners,
-    CodeownersLine,
+    CodeownersLine, ParsedLine,
 };
 use pattern::pattern_matches;
 use settings::{load_settings_from_path, Settings, CONFIG_FILE, CONFIG_FILE_LOCAL};
@@ -35,7 +36,7 @@ use settings::{load_settings_from_path, Settings, CONFIG_FILE, CONFIG_FILE_LOCAL
 struct Backend {
     client: Client,
     workspace_root: RwLock<Option<PathBuf>>,
-    codeowners: RwLock<Option<Owners>>,
+    codeowners: RwLock<Option<Vec<ParsedLine>>>,
     codeowners_path: RwLock<Option<PathBuf>>,
     settings: RwLock<Settings>,
     file_cache: RwLock<Option<FileCache>>,
@@ -79,41 +80,34 @@ impl Backend {
 
         // Heavy work in blocking thread
         let result = tokio::task::spawn_blocking(move || {
-            // If custom path is set, use it
-            if let Some(custom) = &custom_path {
-                let path = root.join(custom);
-                if path.exists() {
-                    let owners = codeowners::from_path(&path);
-                    return Some((Some(owners), Some(path)));
-                }
-            }
+            let path = custom_path
+                .as_ref()
+                .map(|p| root.join(p))
+                .filter(|p| p.exists())
+                .or_else(|| find_codeowners(&root))?;
 
-            // Otherwise use the crate's locate function
-            if let Some(path) = codeowners::locate(&root) {
-                let owners = codeowners::from_path(&path);
-                return Some((Some(owners), Some(path)));
-            }
-
-            Some((None, None))
+            let parsed = fs::read_to_string(&path)
+                .ok()
+                .map(|c| parse_codeowners_file_with_positions(&c));
+            Some((parsed, path))
         })
         .await
         .ok()
         .flatten();
 
         // Write results back (fast)
-        if let Some((owners, path)) = result {
-            *self.codeowners.write().unwrap() = owners;
-            *self.codeowners_path.write().unwrap() = path.clone();
-            return path;
+        if let Some((parsed, path)) = result {
+            *self.codeowners.write().unwrap() = parsed;
+            *self.codeowners_path.write().unwrap() = Some(path.clone());
+            return Some(path);
         }
         None
     }
 
     /// Load CODEOWNERS rules from buffer content (for unsaved changes)
     fn load_codeowners_from_content(&self, content: &str) {
-        use std::io::Cursor;
-        let owners = codeowners::from_reader(Cursor::new(content));
-        *self.codeowners.write().unwrap() = Some(owners);
+        let parsed = parse_codeowners_file_with_positions(content);
+        *self.codeowners.write().unwrap() = Some(parsed);
     }
 
     /// Refresh file cache - runs in blocking thread pool
@@ -319,16 +313,15 @@ impl Backend {
         let relative_path = file_path.strip_prefix(root).ok()?;
 
         let codeowners = self.codeowners.read().unwrap();
-        let codeowners = codeowners.as_ref()?;
+        let parsed = codeowners.as_ref()?;
 
-        // .of() returns None if no rule matches, Some(vec) if a rule matches
-        let owners = codeowners.of(relative_path)?;
-        let owner_strs: Vec<String> = owners.iter().map(|o| o.to_string()).collect();
+        let path_str = relative_path.to_str()?;
+        let result = check_file_ownership_parsed(parsed, path_str)?;
 
-        if owner_strs.is_empty() {
+        if result.owners.is_empty() {
             Some(None) // Rule matches but no owners
         } else {
-            Some(Some(owner_strs.join(" "))) // Rule matches with owners
+            Some(Some(result.owners.join(" "))) // Rule matches with owners
         }
     }
 

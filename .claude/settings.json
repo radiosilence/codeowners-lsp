@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_INPUT\" | grep -q 'git push'; then cd \"$(git rev-parse --show-toplevel)\" && echo 'Pre-push: formatting...' && cargo fmt --all 2>&1 && if ! git diff --quiet; then echo 'Pre-push: fmt changed files, staging...' && git add -A && git commit --amend --no-edit 2>&1; fi && echo 'Pre-push: running clippy...' && cargo clippy --workspace -- -D warnings 2>&1 || { echo 'Clippy failed — fix before pushing'; exit 1; } && echo 'fmt + clippy clean'; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
