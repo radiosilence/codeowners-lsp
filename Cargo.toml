@@ -1,68 +1,12 @@
-[package]
-name = "codeowners-lsp"
-version = "0.17.4"
+[workspace]
+resolver = "2"
+members = [
+  "crates/codeowners-parser",
+  "crates/codeowners-lsp",
+]
+
+[workspace.package]
 edition = "2021"
-description = "Language server providing CODEOWNERS information via hover and inlay hints"
-repository = "https://github.com/radiosilence/codeowners-lsp"
 license = "MIT"
-keywords = ["codeowners", "language-server", "lsp"]
-categories = ["development-tools"]
-
-[lib]
-name = "codeowners_lsp"
-path = "src/lib.rs"
-
-[[bin]]
-name = "codeowners-lsp"
-path = "src/main.rs"
-
-[[bin]]
-name = "codeowners-cli"
-path = "src/cli.rs"
-
-[[bench]]
-harness = false
-name = "parsing"
-
-[[bench]]
-harness = false
-name = "pattern_matching"
-
-[[bench]]
-harness = false
-name = "diagnostics"
-
-[[bench]]
-harness = false
-name = "file_cache"
-
-[[bench]]
-harness = false
-name = "lsp_handlers"
-
-[dependencies]
-clap = { version = "4.5", features = ["derive", "env"] }
-clap_complete = "4"
-colored = "3"
-fast-glob = "1.0"
-futures = "0.3"
-glob = "0.3"
-indicatif = "0.18"
-once_cell = "1"
-rayon = "1.10"
-regex = "1.12"
-reqwest = { version = "0.13", default-features = false, features = [
-  "json",
-  "rustls"
-] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-toml = "1"
-tower-lsp = { version = "0.20", features = ["proposed"] }
-
-[dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
-rand = "0.10"
-tempfile = "3"
-wiremock = "0.6"
+repository = "https://github.com/radiosilence/codeowners-lsp"
+authors = ["James Cleveland <jc@blit.cc>"]

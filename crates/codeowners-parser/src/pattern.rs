@@ -1,24 +1,50 @@
-/// Pre-processed pattern for fast matching
+//! Fast CODEOWNERS pattern matching with shape-based specialization.
+//!
+//! Every CODEOWNERS pattern is classified at compile time into one of a
+//! handful of shapes, and each shape gets its own matcher. Typical monorepo
+//! CODEOWNERS files are ~80% `*.ext` extension patterns and directory
+//! prefixes — those get raw `ends_with` / `starts_with` on bytes, no glob
+//! engine involvement.
+//!
+//! For the minority of truly globby patterns (`src/**/*.rs`), we fall through
+//! to [`fast_glob`](https://crates.io/crates/fast-glob).
+
+/// A CODEOWNERS pattern, pre-processed for repeated fast matching.
+///
+/// Use [`CompiledPattern::new`] to compile, then [`CompiledPattern::matches`]
+/// to match paths. Construction is O(pattern length); matching is close to
+/// O(path length) for all variants except the glob ones.
 pub enum CompiledPattern {
-    /// Matches everything (unanchored * or **)
+    /// Matches everything (unanchored `*` or `**`).
     MatchAll,
-    /// Anchored /* - matches only root-level files
+    /// Anchored `/*` — matches only root-level files (no slashes in path).
     RootFilesOnly,
-    /// Extension suffix like .rs (from *.rs) - simple ends_with check
+    /// Extension suffix like `.rs` (from `*.rs`) — simple `ends_with` check.
+    ///
+    /// Stored as the literal suffix including the leading dot. Matcher also
+    /// verifies there is a `/` immediately before the suffix to avoid false
+    /// positives like `notrs` matching `.rs`.
     ExtensionSuffix(String),
-    /// Single-segment glob like *.rs - needs **/ prefix for matching
+    /// Single-segment glob like `*.rs` that fell out of the extension
+    /// fast-path — matched via `fast_glob` with a prepended `**/` so it
+    /// triggers in any directory.
     SingleSegmentGlob(String),
-    /// Multi-segment glob like src/**/*.rs
+    /// Multi-segment glob like `src/**/*.rs` — matched directly via `fast_glob`.
     MultiSegmentGlob(String),
-    /// Anchored directory pattern like /src/ - matches prefix at root only
+    /// Anchored directory pattern like `/src/` — matches a prefix at the root only.
     AnchoredDirectory(String),
-    /// Unanchored directory pattern like docs/ - matches anywhere
+    /// Unanchored directory pattern like `docs/` — matches anywhere in the tree.
     UnanchoredDirectory(String),
-    /// Exact path or directory prefix (always anchored)
+    /// An exact path, always anchored (no wildcards, no trailing slash).
     Exact(String),
 }
 
 impl CompiledPattern {
+    /// Compile a CODEOWNERS pattern string into a specialized matcher.
+    ///
+    /// The leading `/` (anchor) is inspected to distinguish anchored from
+    /// unanchored directory patterns; a trailing `/` selects directory
+    /// matching over exact matching.
     pub fn new(pattern: &str) -> Self {
         let anchored = pattern.starts_with('/');
         let pattern = pattern.trim_start_matches('/');
@@ -60,6 +86,11 @@ impl CompiledPattern {
         CompiledPattern::Exact(pattern.to_string())
     }
 
+    /// Test whether `path` matches this pattern.
+    ///
+    /// Empty paths never match. Pattern semantics follow GitHub's
+    /// CODEOWNERS rules (last match wins is handled by the caller —
+    /// see [`check_file_ownership_parsed`](crate::check_file_ownership_parsed)).
     #[inline]
     pub fn matches(&self, path: &str) -> bool {
         if path.is_empty() {

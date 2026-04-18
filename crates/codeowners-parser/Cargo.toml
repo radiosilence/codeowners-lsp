@@ -1,0 +1,18 @@
+[package]
+name = "codeowners-parser"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Parser, matcher, and validator for GitHub CODEOWNERS files. Position-aware parsing for editor tooling, fast glob matching, and rule-subsumption analysis for dead-code detection."
+documentation = "https://docs.rs/codeowners-parser"
+readme = "README.md"
+keywords = ["codeowners", "parser", "github", "glob", "lsp"]
+categories = ["parser-implementations", "development-tools"]
+
+[dependencies]
+fast-glob = "1.0"
+glob = "0.3"
+once_cell = "1"
+regex = "1.12"

@@ -1,28 +1,42 @@
-/// Represents a parsed line from a CODEOWNERS file with position info
+//! Parse CODEOWNERS files into structured lines, with or without positions.
+//!
+//! Two parse entry points:
+//! - [`parse_codeowners_file_with_positions`] — retains character offsets
+//!   for every pattern, owner span, and inline comment. Use this for
+//!   editor tooling.
+//! - [`parse_codeowners_file`] — drops positions, returns only the
+//!   logical content. Use this for CLI-style tools that only need to
+//!   inspect or rewrite rules.
+
+/// A parsed CODEOWNERS line with character offsets for editor tooling.
 #[derive(Debug, Clone)]
 pub struct ParsedLine {
+    /// 0-indexed line number in the source file.
     pub line_number: u32,
+    /// The logical content of the line (rule, comment, or empty).
     pub content: CodeownersLine,
-    /// Character offset where pattern starts
+    /// Character offset where the pattern starts (0 for non-rule lines).
     pub pattern_start: u32,
-    /// Character offset where pattern ends
+    /// Character offset one past the end of the pattern.
     pub pattern_end: u32,
-    /// Character offset where owners start
+    /// Character offset where owners start (equals `pattern_end` if no owners).
     pub owners_start: u32,
-    /// Character offset where inline comment starts (the # character), if present
+    /// Character offset of the inline comment's `#`, if any.
     pub comment_start: Option<u32>,
 }
 
-/// Represents a parsed line from a CODEOWNERS file
+/// The logical content of a CODEOWNERS line.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodeownersLine {
-    /// A comment line (starts with #)
+    /// A comment line (starts with `#`). The stored string includes the `#`.
     Comment(String),
-    /// An empty line
+    /// A blank or whitespace-only line.
     Empty,
-    /// A rule with pattern and owners
+    /// A rule line: a glob pattern followed by zero or more owners.
     Rule {
+        /// The glob pattern, exactly as written (no normalization).
         pattern: String,
+        /// Owners assigned to this rule. May be empty.
         owners: Vec<String>,
     },
 }

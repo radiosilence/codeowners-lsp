@@ -16,33 +16,36 @@ cargo bench --bench parsing  # run a single benchmark group
 
 ## Architecture
 
+Cargo workspace with two member crates:
+
 ```
-src/
-├── lib.rs           # Shared library crate (re-exports all shared modules)
-├── main.rs          # LSP entry + Backend struct + LanguageServer trait impl
-├── cli.rs           # CLI entry point
-├── handlers/        # LSP-only request handlers
-│   ├── symbols.rs   # document_symbol, workspace_symbol
-│   ├── navigation.rs # references, rename
-│   ├── semantic.rs  # semantic_tokens, folding_range
-│   ├── lens.rs      # code_lens
-│   ├── signature.rs # signature_help
-│   ├── selection.rs # selection_range
-│   ├── linked.rs    # linked_editing_range
-│   └── util.rs      # shared helpers (find_nth_owner_position)
-├── commands/        # CLI-only commands
-│   ├── suggest.rs   # suggest owners from git history
-│   ├── optimize.rs  # consolidate patterns
-│   └── ...          # lint, fmt, fix, check, coverage, tree, config
-├── blame.rs         # Shared: git blame/shortlog analysis
-├── parser.rs        # Shared: CODEOWNERS parsing
-├── pattern.rs       # Shared: glob matching
-├── diagnostics.rs   # Shared: validation logic
-├── file_cache.rs    # Shared: file enumeration
-└── github.rs        # Shared: GitHub API client
+crates/
+├── codeowners-parser/       # Standalone parser library (publishable)
+│   ├── README.md
+│   └── src/
+│       ├── lib.rs           # Crate docs + public re-exports, #![deny(missing_docs)]
+│       ├── parser.rs        # Line parsing with character positions
+│       ├── pattern.rs       # CompiledPattern + pattern_matches/pattern_subsumes
+│       ├── validation.rs    # Syntactic owner + glob validators
+│       └── ownership.rs     # check_file_ownership*, find_codeowners, get_repo_root
+└── codeowners-lsp/          # LSP server + CLI binaries (depends on parser)
+    ├── benches/             # Criterion benches
+    └── src/
+        ├── lib.rs           # Shared library crate (re-exports parser modules)
+        ├── main.rs          # LSP entry + Backend + LanguageServer impl
+        ├── cli.rs           # CLI entry
+        ├── handlers/        # LSP-only request handlers
+        ├── commands/        # CLI-only commands
+        ├── ownership.rs     # apply_safe_fixes (uses FileCache); re-exports parser fns
+        ├── diagnostics.rs   # LSP-specific validation + GitHub diagnostics
+        ├── file_cache.rs    # File enumeration with compiled-pattern cache
+        ├── github.rs        # GitHub API client with persistent cache
+        ├── settings.rs      # LSP/CLI config
+        ├── blame.rs         # Git blame analysis (CLI suggest)
+        └── lookup.rs        # Email → team lookup command
 ```
 
-Using `tower-lsp`. The `codeowners` crate handles matching (read-only), we handle parsing/validation/writes ourselves.
+Using `tower-lsp`. The `codeowners-parser` crate handles parsing, matching, and validation; this crate adds the LSP plumbing, diagnostic engine, file enumeration, and GitHub integration.
 
 Key structs:
 
@@ -91,9 +94,10 @@ Key structs:
 
 ## Key Gotchas
 
-- Shared code lives in `src/lib.rs` (lib crate); binaries re-export via `pub use`
-- `#[allow(dead_code)]` still needed for functions only called from one binary context
-- GitHub usernames: alphanumeric, hyphens, underscores only (NO periods)
-- CODEOWNERS does NOT support `[...]` character classes or `!` negation (unlike gitignore)
-- Owner matching in handlers must use forward search with word boundaries, not `find()`/`rfind()`
-- `check_file_ownership_parsed()` exists for hot loops; `check_file_ownership()` re-parses each call
+- `codeowners-parser` is `#![deny(missing_docs)]` — every pub item needs a doc comment.
+- LSP's `lib.rs` re-exports `parser`/`pattern`/`validation` from parser crate, so `crate::parser::X` still resolves inside LSP code.
+- `#[allow(dead_code)]` in LSP is still needed for functions only called from one binary context.
+- GitHub usernames: alphanumeric, hyphens, underscores only (NO periods).
+- CODEOWNERS does NOT support `[...]` character classes or `!` negation (unlike gitignore).
+- Owner matching in handlers must use forward search with word boundaries, not `find()`/`rfind()`.
+- `check_file_ownership_parsed()` exists for hot loops; `check_file_ownership()` re-parses each call.

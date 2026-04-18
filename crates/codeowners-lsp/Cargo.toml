@@ -1,0 +1,66 @@
+[package]
+name = "codeowners-lsp"
+version = "0.18.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Language server providing CODEOWNERS information via hover and inlay hints"
+keywords = ["codeowners", "language-server", "lsp"]
+categories = ["development-tools"]
+
+[lib]
+name = "codeowners_lsp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "codeowners-lsp"
+path = "src/main.rs"
+
+[[bin]]
+name = "codeowners-cli"
+path = "src/cli.rs"
+
+[[bench]]
+harness = false
+name = "parsing"
+
+[[bench]]
+harness = false
+name = "pattern_matching"
+
+[[bench]]
+harness = false
+name = "diagnostics"
+
+[[bench]]
+harness = false
+name = "file_cache"
+
+[[bench]]
+harness = false
+name = "lsp_handlers"
+
+[dependencies]
+codeowners-parser = { version = "0.1", path = "../codeowners-parser" }
+clap = { version = "4.5", features = ["derive", "env"] }
+clap_complete = "4"
+colored = "3"
+futures = "0.3"
+indicatif = "0.18"
+rayon = "1.10"
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "rustls"
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "1"
+tower-lsp = { version = "0.20", features = ["proposed"] }
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+rand = "0.10"
+tempfile = "3"
+wiremock = "0.6"
