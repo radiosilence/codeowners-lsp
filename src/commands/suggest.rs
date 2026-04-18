@@ -276,7 +276,7 @@ fn apply_suggestions(content: &str, suggestions: &[OwnerSuggestion]) -> String {
         .collect();
 
     // Sort by insertion point descending so we insert from bottom to top
-    insertions.sort_by(|a, b| b.0.cmp(&a.0));
+    insertions.sort_by_key(|i| std::cmp::Reverse(i.0));
 
     for (idx, line) in insertions {
         lines.insert(idx, line);
