@@ -188,3 +188,39 @@ jobs:
           prerelease: false
           files: artifacts/**/*
           generate_release_notes: true
+
+  # Publish to crates.io (only if version changed). Parser must publish before
+  # the LSP because the LSP depends on it.
+  publish-crates:
+    name: Publish to crates.io
+    needs: [check-version]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish codeowners-parser
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          VERSION=$(grep '^version' crates/codeowners-parser/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if curl -sSf "https://crates.io/api/v1/crates/codeowners-parser/$VERSION" > /dev/null 2>&1; then
+            echo "codeowners-parser $VERSION already on crates.io, skipping"
+          else
+            cargo publish -p codeowners-parser
+            # Give the index a moment to update so the dependent publish resolves.
+            sleep 30
+          fi
+
+      - name: Publish codeowners-lsp
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          VERSION=$(grep '^version' crates/codeowners-lsp/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if curl -sSf "https://crates.io/api/v1/crates/codeowners-lsp/$VERSION" > /dev/null 2>&1; then
+            echo "codeowners-lsp $VERSION already on crates.io, skipping"
+          else
+            cargo publish -p codeowners-lsp
+          fi
