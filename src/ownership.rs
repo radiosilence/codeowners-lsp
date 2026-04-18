@@ -7,10 +7,21 @@ use crate::file_cache::FileCache;
 use crate::parser::{parse_codeowners_file_with_positions, CodeownersLine};
 use crate::pattern::pattern_matches;
 
-/// Find a CODEOWNERS file starting from the given directory
-#[allow(dead_code)] // Used by CLI only
+/// Find a CODEOWNERS file starting from the given directory.
+/// Walks up from `start`, checking `.github/CODEOWNERS`, `CODEOWNERS`, and `docs/CODEOWNERS` at each level.
 pub fn find_codeowners(start: &Path) -> Option<PathBuf> {
-    codeowners::locate(start)
+    const CANDIDATES: [&str; 3] = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        for candidate in CANDIDATES {
+            let path = dir.join(candidate);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        current = dir.parent();
+    }
+    None
 }
 
 /// Get the repository root from a CODEOWNERS file path

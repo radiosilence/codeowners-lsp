@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.17.4] - 2026-04-18
+
+### Security
+
+- **Dropped abandoned `codeowners` crate** (last published 2018, v0.1.3) — pulled in vulnerable `regex 0.2.11` (RUSTSEC-2022-0013, HIGH, ReDoS) and `thread_local 0.3.6` (RUSTSEC-2022-0006, data race). `cargo audit` now clean. We already had our own parser/matcher (`parser.rs`, `pattern.rs`, `ownership.rs`) so the crate was only used in 5 call sites — replaced with local equivalents.
+
+### Changed
+
+- **Bumped `toml` 0.9 → 1.1** — stable API, no code changes needed.
+- **Bumped dev deps `criterion` 0.5 → 0.8, `rand` 0.8 → 0.10** — bench testdata adapted to rand's renamed methods (`gen_range`/`gen_bool` → `random_range`/`random_bool`, `Rng` → `RngExt`).
+- **Dependency count: 314 → 304** crates.
+
+### Removed
+
+- 5 stale merged branches on origin.
+
 ## [0.17.3] - 2026-02-10
 
 ### Changed
