@@ -35,6 +35,21 @@ pub fn validate_pattern(pattern: &str) -> Option<String> {
         return Some("Empty pattern".to_string());
     }
 
+    // These are valid general-purpose glob syntax, so the glob crate accepts
+    // them — but GitHub documents both as unsupported in CODEOWNERS, where
+    // they are treated as inert literals that silently match nothing.
+    if pattern.starts_with('!') {
+        return Some(
+            "CODEOWNERS does not support '!' negation; the rule will never match".to_string(),
+        );
+    }
+    if pattern.contains('[') {
+        return Some(
+            "CODEOWNERS does not support '[...]' character ranges; the rule will never match"
+                .to_string(),
+        );
+    }
+
     // Try to compile as glob pattern
     if let Err(e) = Pattern::new(pattern_for_glob) {
         return Some(format!("Invalid glob pattern: {}", e));
@@ -127,5 +142,18 @@ mod tests {
     fn test_invalid_glob_syntax() {
         // Unclosed bracket
         assert!(validate_pattern("[invalid").is_some());
+    }
+
+    #[test]
+    fn test_rejects_syntax_codeowners_does_not_support() {
+        // Valid general-purpose glob, but GitHub treats both as inert literals
+        // that silently match nothing — so they must not pass validation.
+        assert!(validate_pattern("[abc].txt").is_some());
+        assert!(validate_pattern("src/[a-z]*.rs").is_some());
+        assert!(validate_pattern("!docs/").is_some());
+        assert!(validate_pattern("!/src/main.rs").is_some());
+
+        // A `!` that is not leading is just an ordinary filename character.
+        assert!(validate_pattern("docs/hello!.md").is_none());
     }
 }

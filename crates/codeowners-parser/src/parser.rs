@@ -101,8 +101,14 @@ pub fn parse_codeowners_file_with_positions(content: &str) -> Vec<ParsedLine> {
                     // Find pattern position
                     let pattern_start = line.find(parts[0]).unwrap_or(0) as u32;
                     let pattern_end = pattern_start + parts[0].len() as u32;
+                    // Search after the pattern, not from the start of the line —
+                    // an owner that also appears inside its own pattern (say
+                    // `api/src api`) would otherwise report the pattern's offset.
                     let owners_start = if parts.len() > 1 {
-                        line.find(parts[1]).unwrap_or(pattern_end as usize) as u32
+                        line[pattern_end as usize..]
+                            .find(parts[1])
+                            .map(|offset| pattern_end + offset as u32)
+                            .unwrap_or(pattern_end)
                     } else {
                         pattern_end
                     };
@@ -866,5 +872,30 @@ mod tests {
             formatted,
             "# Header\n*.rs @owner # rust files\n/src/ @team # source dir\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod owner_offset_tests {
+    use super::{parse_codeowners_file_with_positions, CodeownersLine};
+
+    fn owners_start_of(line: &str) -> u32 {
+        let parsed = parse_codeowners_file_with_positions(line);
+        assert!(matches!(parsed[0].content, CodeownersLine::Rule { .. }));
+        parsed[0].owners_start
+    }
+
+    #[test]
+    fn owners_start_skips_matches_inside_the_pattern() {
+        // "api" occurs inside the pattern before it occurs as the owner.
+        assert_eq!(owners_start_of("api/src api"), 8);
+        assert_eq!(owners_start_of("docs/ @docs"), 6);
+        assert_eq!(owners_start_of("src src src"), 4);
+    }
+
+    #[test]
+    fn owners_start_is_unchanged_for_ordinary_rules() {
+        assert_eq!(owners_start_of("*.rs @owner"), 5);
+        assert_eq!(owners_start_of("/src/  @org/team"), 7);
     }
 }

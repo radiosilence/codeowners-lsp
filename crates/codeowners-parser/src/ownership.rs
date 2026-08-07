@@ -104,7 +104,7 @@ pub fn check_file_ownership(content: &str, file_path: &str) -> Option<OwnershipR
 ///
 /// Use this in hot loops where you'd otherwise call [`check_file_ownership`]
 /// repeatedly against the same content — parse once with
-/// [`parse_codeowners_file_with_positions`](crate::parser::parse_codeowners_file_with_positions)
+/// [`crate::parser::parse_codeowners_file_with_positions`]
 /// and reuse the result.
 ///
 /// Leading `./` is stripped from `file_path` before matching.

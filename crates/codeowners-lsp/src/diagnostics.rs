@@ -462,7 +462,7 @@ mod tests {
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].severity, Some(DiagnosticSeverity::ERROR));
-        assert!(diagnostics[0].message.contains("Invalid glob pattern"));
+        assert!(diagnostics[0].message.contains("character range"));
     }
 
     #[test]
@@ -707,7 +707,7 @@ src/apps/foo/priv/gettext/ @team2
         // Should have invalid pattern error
         assert!(diagnostics
             .iter()
-            .any(|d| d.message.contains("Invalid glob pattern")));
+            .any(|d| d.message.contains("character range")));
     }
 
     #[test]

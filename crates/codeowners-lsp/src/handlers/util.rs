@@ -1,5 +1,22 @@
 //! Shared utilities for LSP handlers
 
+/// Convert an LSP `Position.character` to a byte index into `line`.
+///
+/// LSP counts characters in UTF-16 code units, not bytes. Slicing a line with
+/// the raw value panics the moment anything non-ASCII appears earlier on it,
+/// so every cursor-relative slice has to go through here. Out-of-range values
+/// clamp to the end of the line.
+pub fn utf16_offset_to_byte_index(line: &str, character: usize) -> usize {
+    let mut utf16_units = 0;
+    for (byte_index, ch) in line.char_indices() {
+        if utf16_units >= character {
+            return byte_index;
+        }
+        utf16_units += ch.len_utf16();
+    }
+    line.len()
+}
+
 /// Find the byte position of the nth occurrence of an owner string in a line.
 ///
 /// `n` is the occurrence count (0-indexed) of this specific owner as a
@@ -87,5 +104,38 @@ mod tests {
         assert_eq!(find_nth_owner_position(line, "@a", 1), Some(11));
         assert_eq!(find_nth_owner_position(line, "@a", 2), Some(14));
         assert_eq!(find_nth_owner_position(line, "@a", 3), None);
+    }
+}
+
+#[cfg(test)]
+mod utf16_tests {
+    use super::utf16_offset_to_byte_index;
+
+    #[test]
+    fn ascii_offsets_are_byte_offsets() {
+        let line = "src/*.rs @owner";
+        assert_eq!(utf16_offset_to_byte_index(line, 0), 0);
+        assert_eq!(utf16_offset_to_byte_index(line, 8), 8);
+        assert_eq!(utf16_offset_to_byte_index(line, 999), line.len());
+    }
+
+    #[test]
+    fn multibyte_offsets_land_on_char_boundaries() {
+        // Slicing this line at the raw LSP offset used to panic.
+        let line = "日本語.rs @owner";
+        for character in 0..=20 {
+            let byte = utf16_offset_to_byte_index(line, character);
+            assert!(line.is_char_boundary(byte), "offset {character} -> {byte}");
+            let _ = &line[..byte];
+        }
+        assert_eq!(utf16_offset_to_byte_index(line, 1), 3);
+        assert_eq!(utf16_offset_to_byte_index(line, 3), 9);
+    }
+
+    #[test]
+    fn astral_chars_count_as_two_utf16_units() {
+        let line = "🦀/main.rs @owner";
+        assert_eq!(utf16_offset_to_byte_index(line, 2), 4);
+        assert!(line.is_char_boundary(utf16_offset_to_byte_index(line, 1)));
     }
 }

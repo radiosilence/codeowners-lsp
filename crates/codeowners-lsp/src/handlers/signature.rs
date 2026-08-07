@@ -28,16 +28,19 @@ const PATTERN_DOCS: &[(&str, &str, &str)] = &[
 
 /// Generate signature help for glob patterns
 pub fn signature_help(line: &str, character: usize) -> Option<SignatureHelp> {
+    // `character` is a UTF-16 offset; everything below indexes bytes.
+    let cursor = crate::handlers::util::utf16_offset_to_byte_index(line, character);
+
     // Only provide help if we're in the pattern part (before first space with @)
     let first_space = line.find(' ');
-    let in_pattern = first_space.map(|s| character <= s).unwrap_or(true);
+    let in_pattern = first_space.map(|s| cursor <= s).unwrap_or(true);
 
     if !in_pattern {
         return None;
     }
 
     // Find which glob character we're near
-    let before_cursor = &line[..character.min(line.len())];
+    let before_cursor = &line[..cursor];
 
     // Check what pattern syntax is being used
     let active_parameter = if before_cursor.ends_with("**") {
@@ -117,5 +120,26 @@ mod tests {
     fn test_signature_help_not_in_pattern() {
         let help = signature_help("*.rs @owner", 8);
         assert!(help.is_none());
+    }
+}
+
+#[cfg(test)]
+mod non_ascii_tests {
+    use super::signature_help;
+
+    #[test]
+    fn does_not_panic_on_multibyte_lines() {
+        // These offsets are mid-codepoint as byte indices; as UTF-16 offsets
+        // they are legitimate cursor positions a client will send.
+        for line in ["日本語.rs @owner", "🦀/*.rs @owner", "docs/ふ*.md @o"] {
+            for character in 0..12 {
+                let _ = signature_help(line, character);
+            }
+        }
+    }
+
+    #[test]
+    fn still_reports_glob_help_after_multibyte_text() {
+        assert!(signature_help("日本語*", 4).is_some());
     }
 }
