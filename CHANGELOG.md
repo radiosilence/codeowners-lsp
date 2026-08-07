@@ -43,10 +43,11 @@
   for third parties; the LSP is already pulled to 1.86 by reqwest.
 - CI actions were three majors behind and unpinned despite f0310f9 claiming
   otherwise (that commit reached exactly one action). All now SHA-pinned.
-- **crates.io publishing is no longer gated on a version bump.** The job was
-  added after v0.18.0 had already been released, so it never fired and neither
-  crate ever reached crates.io. Each step already skips versions that exist, so
-  it now runs on every main push and heals itself.
+- **crates.io publish existence check moved to the sparse index.** The web API
+  rejects unauthenticated automated traffic, and a rejection is indistinguishable
+  from "crate absent", so the check would report work to do on every run. The
+  job also gained a `workflow_dispatch` path, so a publish that failed after its
+  release was cut can be retried without an undeserved version bump.
 
 ### Documentation
 

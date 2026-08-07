@@ -214,15 +214,16 @@ jobs:
   # Publish to crates.io. Parser must publish before the LSP because the LSP
   # depends on it.
   #
-  # Deliberately NOT gated on check-version: this job was added in #11 after
-  # #10 had already released v0.18.0, so should_release was false the first
-  # time it ran and neither crate ever reached crates.io. Each step already
-  # skips when its version exists, so running unconditionally on main lets a
-  # missed publish heal itself on the next push instead of waiting for a bump.
+  # Stays gated on check-version so that what lands on crates.io always
+  # corresponds to a tag. Publishing whatever happens to be on main would let
+  # the registry drift from the release it claims to be, and crates.io versions
+  # cannot be replaced. workflow_dispatch is the escape hatch for a publish that
+  # failed after its release was already cut — otherwise that needs a bump it
+  # has not earned.
   publish-crates:
     name: Publish to crates.io
-    needs: [build]
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [check-version]
+    if: needs.check-version.outputs.should_release == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
