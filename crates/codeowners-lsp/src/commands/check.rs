@@ -76,33 +76,39 @@ pub fn check(
 fn output_json(content: &str, files: &[String]) -> ExitCode {
     let parsed = parse_codeowners_file_with_positions(content);
     let mut results: HashMap<&str, CheckResultJson> = HashMap::new();
+    let mut any_unowned = false;
 
     for file_path in files {
         let result = check_file_ownership_parsed(&parsed, file_path);
-        results.insert(
-            file_path,
-            match result {
-                Some(r) => CheckResultJson {
-                    owned: true,
-                    rule: Some(r.pattern),
-                    line: Some(r.line_number + 1),
-                    owners: r.owners,
-                },
-                None => CheckResultJson {
+        let json_result = match result {
+            Some(r) => CheckResultJson {
+                owned: true,
+                rule: Some(r.pattern),
+                line: Some(r.line_number + 1),
+                owners: r.owners,
+            },
+            None => {
+                any_unowned = true;
+                CheckResultJson {
                     owned: false,
                     rule: None,
                     line: None,
                     owners: vec![],
-                },
-            },
-        );
+                }
+            }
+        };
+        results.insert(file_path, json_result);
     }
 
     println!(
         "{}",
         serde_json::to_string(&results).expect("Failed to serialize JSON")
     );
-    ExitCode::SUCCESS
+    if files.len() == 1 && any_unowned {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn output_human(content: &str, files: &[String]) -> ExitCode {

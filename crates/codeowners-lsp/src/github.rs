@@ -100,13 +100,14 @@ impl PersistentCache {
     }
 
     /// Check if cache is stale (older than 24 hours)
-    #[allow(dead_code)] // May be used later
     pub fn is_stale(&self) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        now - self.last_updated > 86400 // 24 hours
+        // Saturating: a cache stamped in the future (clock skew, or a file
+        // copied between machines) must read as fresh, not underflow.
+        now.saturating_sub(self.last_updated) > 86400 // 24 hours
     }
 
     /// Update timestamp
@@ -149,10 +150,19 @@ pub struct GitHubClient {
     base_url: String,
 }
 
+/// GitHub API calls sit in the diagnostics path, so a hung connection must not
+/// stall the editor indefinitely.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 impl GitHubClient {
     pub fn new() -> Self {
         Self {
-            http_client: reqwest::Client::new(),
+            http_client: http_client(),
             cache: RwLock::new(GitHubCache::default()),
             base_url: "https://api.github.com".to_string(),
         }
@@ -162,7 +172,7 @@ impl GitHubClient {
     #[doc(hidden)]
     pub fn with_base_url(base_url: &str) -> Self {
         Self {
-            http_client: reqwest::Client::new(),
+            http_client: http_client(),
             cache: RwLock::new(GitHubCache::default()),
             base_url: base_url.to_string(),
         }
@@ -178,11 +188,21 @@ impl GitHubClient {
     }
 
     /// Export validation results to persistent cache
+    ///
+    /// `Unknown` entries are dropped. They mean the lookup itself failed —
+    /// rate limit, missing token, network down — not that the owner is bad.
+    /// Writing them to disk turns one transient failure into a permanent one,
+    /// because every retry is gated on the owner not already being cached.
     #[allow(dead_code)] // Used by LSP only
     pub fn export_to_persistent(&self) -> PersistentCache {
         let cache = self.cache.read().unwrap();
         let mut persistent = PersistentCache {
-            owners: cache.owners.clone(),
+            owners: cache
+                .owners
+                .iter()
+                .filter(|(_, info)| !matches!(info, OwnerInfo::Unknown(_)))
+                .map(|(owner, info)| (owner.clone(), info.clone()))
+                .collect(),
             ..Default::default()
         };
         persistent.touch();
@@ -538,6 +558,48 @@ mod tests {
         // Old timestamp is stale
         cache.last_updated = 1; // Unix epoch + 1 second
         assert!(cache.is_stale());
+    }
+
+    #[test]
+    fn transient_failures_are_not_persisted() {
+        let client = GitHubClient::new();
+        {
+            let mut cache = client.cache.write().unwrap();
+            cache.owners.insert(
+                "@rate-limited".to_string(),
+                OwnerInfo::Unknown("rate limit exceeded".to_string()),
+            );
+            cache.owners.insert(
+                "@real-user".to_string(),
+                OwnerInfo::User(UserInfo {
+                    login: "real-user".to_string(),
+                    name: None,
+                    html_url: "https://github.com/real-user".to_string(),
+                    avatar_url: None,
+                    bio: None,
+                    company: None,
+                }),
+            );
+        }
+
+        // A rate limit must not become a permanent verdict: it is cached in
+        // memory for this session but never written to disk, so the next run
+        // retries it instead of trusting a failure forever.
+        let persistent = client.export_to_persistent();
+        assert!(persistent.owners.contains_key("@real-user"));
+        assert!(!persistent.owners.contains_key("@rate-limited"));
+    }
+
+    #[test]
+    fn future_timestamps_do_not_underflow() {
+        let mut cache = PersistentCache::default();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Clock skew, or a cache file copied from another machine.
+        cache.last_updated = now + 10_000;
+        assert!(!cache.is_stale());
     }
 
     #[test]

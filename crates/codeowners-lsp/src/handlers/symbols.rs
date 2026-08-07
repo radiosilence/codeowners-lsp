@@ -1,6 +1,6 @@
 //! Document and workspace symbol handlers
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use tower_lsp::lsp_types::*;
 
@@ -188,10 +188,19 @@ pub fn workspace_symbols(content: &str, query: &str, uri: &Url) -> Vec<SymbolInf
             }
 
             // Match against owners
+            let mut seen: HashMap<&str, usize> = HashMap::new();
             for owner in owners {
+                // Count every owner, not just query hits, so the nth-occurrence
+                // lookup below stays aligned with the line's actual text.
+                let occurrence = seen.entry(owner.as_str()).or_insert(0);
+                let n = *occurrence;
+                *occurrence += 1;
+
                 if query.is_empty() || owner.to_lowercase().contains(&query) {
                     let line_text = lines.get(line.line_number as usize).unwrap_or(&"");
-                    if let Some(pos) = line_text.find(owner.as_str()) {
+                    // A plain `find` would land inside `@alice-admin` when
+                    // looking for `@alice`; owners need word boundaries.
+                    if let Some(pos) = super::util::find_nth_owner_position(line_text, owner, n) {
                         #[allow(deprecated)]
                         symbols.push(SymbolInformation {
                             name: owner.clone(),

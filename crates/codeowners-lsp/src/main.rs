@@ -132,7 +132,11 @@ impl Backend {
         let root = self.workspace_root.read().unwrap();
         if let Some(root) = root.as_ref() {
             let persistent = PersistentCache::load(root);
-            self.github_client.load_from_persistent(&persistent);
+            // The CLI paths already honour the 24h TTL; the long-running server
+            // has to as well, or a cache written months ago is trusted forever.
+            if !persistent.is_stale() {
+                self.github_client.load_from_persistent(&persistent);
+            }
         }
     }
 
@@ -1927,12 +1931,8 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let col = position.character as usize;
-        let text_before_cursor = if col <= line.len() {
-            &line[..col]
-        } else {
-            line
-        };
+        let col = handlers::util::utf16_offset_to_byte_index(line, position.character as usize);
+        let text_before_cursor = &line[..col];
 
         let last_space = text_before_cursor.rfind(' ').map(|i| i + 1).unwrap_or(0);
         let current_word = &text_before_cursor[last_space..];
@@ -2009,8 +2009,8 @@ impl LanguageServer for Backend {
                         ));
                         // Snippet: dir/** with owner placeholder
                         items.push(make_snippet(
-                            format!("{}** @...", &path),
-                            format!("{}** ${{1:@owner}}", &path),
+                            format!("{}** @...", path),
+                            format!("{}** ${{1:@owner}}", path),
                             CompletionItemKind::SNIPPET,
                             "Directory rule with owner".to_string(),
                         ));
@@ -2022,8 +2022,8 @@ impl LanguageServer for Backend {
                             "File".to_string(),
                         ));
                         items.push(make_snippet(
-                            format!("{} @...", &path),
-                            format!("{} ${{1:@owner}}", &path),
+                            format!("{} @...", path),
+                            format!("{} ${{1:@owner}}", path),
                             CompletionItemKind::SNIPPET,
                             "File rule with owner".to_string(),
                         ));
