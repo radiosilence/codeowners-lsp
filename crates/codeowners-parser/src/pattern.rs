@@ -262,9 +262,14 @@ pub fn pattern_subsumes(a: &str, b: &str) -> bool {
         return true;
     }
 
-    // Universal patterns subsume everything
-    if b == "*" || b == "**" {
+    // Universal patterns subsume everything. `/*` is not one of them — it
+    // covers root-level entries only, so it must not swallow nested rules.
+    if b == "**" || (b == "*" && !b_anchored) {
         return true;
+    }
+    if b == "*" {
+        // Anchored `/*`: only rules that are themselves confined to the root.
+        return (a == "*" && a_anchored) || (!a.contains('/') && !a.contains('*'));
     }
 
     // Extension patterns: *.rs is subsumed by *
@@ -289,33 +294,32 @@ pub fn pattern_subsumes(a: &str, b: &str) -> bool {
         .trim_end_matches("/**")
         .trim_end_matches("/*");
 
-    let a_is_dir = a.ends_with('/') || a.ends_with("/**") || a.ends_with("/*");
-    let b_is_dir = b.ends_with('/') || b.ends_with("/**") || b.ends_with("/*");
+    let a_reach = dir_reach(a);
+    let b_reach = dir_reach(b);
+
+    // Only a bare trailing slash floats: `docs/` matches a docs directory at
+    // any depth, while `docs/*` and `docs/**` are globs pinned to the root.
+    let a_floats = !a_anchored && a.ends_with('/');
+    let b_floats = !b_anchored && b.ends_with('/');
 
     // Handle anchored vs unanchored directory patterns
-    if a_is_dir && b_is_dir {
-        // Unanchored pattern matches MORE files than anchored
-        // So: anchored IS subsumed by unanchored (if same path)
-        //     unanchored is NOT subsumed by anchored
-        if a_anchored && !b_anchored {
-            // /docs/ subsumed by docs/ - yes, if same or b is parent
-            return a_dir == b_dir || starts_with_dir(a_dir, b_dir);
-        }
-        if !a_anchored && b_anchored {
-            // docs/ subsumed by /docs/ - NO, unanchored matches nested paths
+    if let (Some(a_reach), Some(b_reach)) = (a_reach, b_reach) {
+        // The floating pattern matches MORE files, so it is never subsumed by
+        // a pinned one — `docs/` also covers nested `x/docs/`.
+        if a_floats && !b_floats {
             return false;
         }
-        // Both same anchoring - normal rules
+        if b_reach == DirReach::DirectChildren {
+            return a_reach == DirReach::DirectChildren && a_dir == b_dir;
+        }
         return a_dir == b_dir || starts_with_dir(a_dir, b_dir);
     }
 
     // Exact file in directory: src/main.rs subsumed by src/ or src/**
-    if b_is_dir && !a_is_dir {
-        // If b is unanchored, it matches more, so a could be subsumed
-        // If b is anchored and a is not a nested path, still works
-        if !a_anchored && b_anchored {
-            // Unanchored file path not subsumed by anchored dir
-            return false;
+    // An exact path is always root-anchored, so only `b`'s reach matters here.
+    if let (None, Some(b_reach)) = (a_reach, b_reach) {
+        if b_reach == DirReach::DirectChildren {
+            return is_direct_child(a, b_dir);
         }
         return a == b_dir || starts_with_dir(a, b_dir);
     }
@@ -323,10 +327,38 @@ pub fn pattern_subsumes(a: &str, b: &str) -> bool {
     false
 }
 
+/// How deep a directory-style pattern reaches.
+///
+/// `docs/` and `docs/**` cover the whole subtree, but `docs/*` stops at the
+/// directory's immediate entries — GitHub's own docs spell this out: `docs/*`
+/// matches `docs/getting-started.md` and not `docs/build-app/troubleshooting.md`.
+/// Collapsing the two is what makes a rule look dead when it isn't.
+#[derive(PartialEq, Clone, Copy)]
+enum DirReach {
+    Recursive,
+    DirectChildren,
+}
+
+fn dir_reach(pattern: &str) -> Option<DirReach> {
+    if pattern.ends_with('/') || pattern.ends_with("/**") {
+        Some(DirReach::Recursive)
+    } else if pattern.ends_with("/*") {
+        Some(DirReach::DirectChildren)
+    } else {
+        None
+    }
+}
+
 /// Check if `path` starts with `dir` followed by `/`
 #[inline]
 fn starts_with_dir(path: &str, dir: &str) -> bool {
     path.starts_with(dir) && path.as_bytes().get(dir.len()) == Some(&b'/')
+}
+
+/// Whether `path` sits directly inside `dir` with nothing nested in between.
+#[inline]
+fn is_direct_child(path: &str, dir: &str) -> bool {
+    starts_with_dir(path, dir) && !path[dir.len() + 1..].contains('/')
 }
 
 #[cfg(test)]

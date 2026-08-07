@@ -89,8 +89,13 @@
 //! ## Hot-loop ownership checks
 //!
 //! When you need to check many paths against the same CODEOWNERS content,
-//! parse once and reuse the result. The crate's compiled-pattern cache
-//! kicks in automatically inside [`check_file_ownership_parsed`].
+//! parse once with [`parser::parse_codeowners_file_with_positions`] and reuse
+//! the result, rather than paying to re-parse per path.
+//!
+//! [`check_file_ownership_parsed`] still classifies each pattern on every
+//! call. If that shows up in a profile, hoist the work yourself by compiling
+//! the patterns once into [`pattern::CompiledPattern`] and matching against
+//! those.
 //!
 //! ```
 //! use codeowners_parser::{check_file_ownership_parsed, parser::parse_codeowners_file_with_positions};
@@ -133,9 +138,9 @@
 //! - **Zero-copy is not a goal.** We return `String` / `Vec<String>` for
 //!   owners and patterns. The alternative (`&str` tied to input lifetime)
 //!   is hostile for interactive tooling that edits CODEOWNERS content.
-//! - **Pattern compilation is cached per-call.** If you need pattern reuse
-//!   across paths, keep a `CompiledPattern` yourself via
-//!   [`pattern::CompiledPattern::compile`].
+//! - **Patterns are not compiled behind your back.** The matching helpers
+//!   classify the pattern string each time they are called. For repeated
+//!   matching, build a [`pattern::CompiledPattern::new`] once and keep it.
 //! - **Glob semantics match `git check-ignore` closely**, not gitignore's
 //!   full spec. CODEOWNERS is a subset: no `[...]` character classes,
 //!   no `!` negation. Patterns containing `[` or `!` at the start are
