@@ -211,12 +211,18 @@ jobs:
           files: artifacts/**/*
           generate_release_notes: true
 
-  # Publish to crates.io (only if version changed). Parser must publish before
-  # the LSP because the LSP depends on it.
+  # Publish to crates.io. Parser must publish before the LSP because the LSP
+  # depends on it.
+  #
+  # Deliberately NOT gated on check-version: this job was added in #11 after
+  # #10 had already released v0.18.0, so should_release was false the first
+  # time it ran and neither crate ever reached crates.io. Each step already
+  # skips when its version exists, so running unconditionally on main lets a
+  # missed publish heal itself on the next push instead of waiting for a bump.
   publish-crates:
     name: Publish to crates.io
-    needs: [check-version]
-    if: needs.check-version.outputs.should_release == 'true'
+    needs: [build]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -230,7 +236,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           VERSION=$(grep '^version' crates/codeowners-parser/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          if curl -sSf "https://crates.io/api/v1/crates/codeowners-parser/$VERSION" > /dev/null 2>&1; then
+          if scripts/crate-version-published.sh codeowners-parser "$VERSION"; then
             echo "codeowners-parser $VERSION already on crates.io, skipping"
           else
             cargo publish -p codeowners-parser
@@ -243,7 +249,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           VERSION=$(grep '^version' crates/codeowners-lsp/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          if curl -sSf "https://crates.io/api/v1/crates/codeowners-lsp/$VERSION" > /dev/null 2>&1; then
+          if scripts/crate-version-published.sh codeowners-lsp "$VERSION"; then
             echo "codeowners-lsp $VERSION already on crates.io, skipping"
           else
             cargo publish -p codeowners-lsp

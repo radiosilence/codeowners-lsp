@@ -67,6 +67,9 @@ git diff --name-only origin/main | codeowners-cli validate-owners --stdin
 # Show all files color-coded by owner
 codeowners-cli tree
 
+# Show config file paths and merged settings
+codeowners-cli config
+
 # Generate shell completions
 codeowners-cli completions zsh       # zsh, bash, fish, powershell, elvish
 
@@ -172,7 +175,6 @@ Groups: `parsing`, `pattern_matching`, `diagnostics`, `file_cache`, `lsp_handler
 
 - **Hover**: Shows file ownership with clickable GitHub links and rich metadata (team descriptions, member counts, user bios)
 - **Inlay Hints**: Displays ownership at the top of each file
-- **Go-to-Definition**: Jump to the CODEOWNERS rule that matches the current file
 - **Code Actions**: Take ownership of files directly from your editor
 
 ### In CODEOWNERS File
@@ -198,7 +200,6 @@ Groups: `parsing`, `pattern_matching`, `diagnostics`, `file_cache`, `lsp_handler
 - **Rename**: Rename an owner across all rules
 - **Signature Help**: Pattern syntax documentation while typing (`*`, `**`, `?`, `/`)
 - **Selection Range**: Smart expand selection (word → owner → all owners → rule → section)
-- **Linked Editing**: Edit an owner and all occurrences update simultaneously
 - **Pattern Hover**: Hover over patterns to see matching files
 - **Code Actions**:
   - Remove shadowed rules
@@ -320,7 +321,7 @@ Override severities in config with: `off`, `hint`, `info`, `warning`, `error`
 | -------------------------------------------- | --------------- |
 | Hover (ownership info)                       | ✅              |
 | Inlay hints (ownership)                      | ✅              |
-| Go-to-definition                             | ✅              |
+| Go-to-definition                             | ➖ removed      |
 | Take ownership actions                       | ✅              |
 | Diagnostics (invalid patterns/owners)        | ✅              |
 | Diagnostics (no matching files)              | ✅              |
@@ -362,11 +363,15 @@ Override severities in config with: `off`, `hint`, `info`, `warning`, `error`
 | Code lens                                    | ✅              |
 | Signature help (pattern syntax)              | ✅              |
 | Selection range (smart expand)               | ✅              |
-| Linked editing (multi-cursor owners)         | ✅              |
+| Linked editing (multi-cursor owners)         | ➖ removed      |
 | Pattern hover (show matches)                 | ✅              |
 | Related diagnostics (shadowed links)         | ✅              |
 | CLI: suggest (git-based suggestions)         | ⚠️ experimental |
 | CLI: optimize (pattern consolidation)        | ✅              |
+
+➖ Go-to-definition and linked editing were removed after shipping: the first
+hijacked click-to-navigate in every file, the second edited every occurrence of
+an owner when you meant one. Hover and rename (F2) cover the same ground.
 
 ## How It Works
 
