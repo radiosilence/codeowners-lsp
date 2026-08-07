@@ -2,6 +2,7 @@
 name = "codeowners-lsp"
 version = "0.18.0"
 edition.workspace = true
+rust-version = "1.86"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -43,12 +44,12 @@ name = "lsp_handlers"
 
 [dependencies]
 codeowners-parser = { version = "0.1", path = "../codeowners-parser" }
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 clap_complete = "4"
 colored = "3"
 futures = "0.3"
 indicatif = "0.18"
-rayon = "1.10"
+rayon = "1.12"
 reqwest = { version = "0.13", default-features = false, features = [
   "json",
   "rustls"

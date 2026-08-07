@@ -6,12 +6,14 @@
 //! the pattern actually matches any files in the repository.
 
 use glob::Pattern;
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
-static TEAM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@[a-zA-Z0-9-]+/[a-zA-Z0-9-]+$").unwrap());
-static USER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@[a-zA-Z0-9-]+$").unwrap());
-static EMAIL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$").unwrap());
+static TEAM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^@[a-zA-Z0-9-]+/[a-zA-Z0-9-]+$").unwrap());
+static USER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^@[a-zA-Z0-9-]+$").unwrap());
+static EMAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$").unwrap());
 
 /// Validate an owner format - returns error message if invalid
 pub fn validate_owner(owner: &str) -> Option<String> {
