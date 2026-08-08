@@ -1,5 +1,62 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`pattern_subsumes` could mark live rules as dead**, and the "remove dead
+  rules" code action would then delete them. `/*` was treated as recursive
+  (it stops at a directory's immediate children) and separately as universal
+  (the leading anchor was stripped before the catch-all check, so any trailing
+  `/*` killed the whole file). Also `src/` is not subsumed by `src/**` — only
+  a bare trailing slash matches at any depth; the glob forms are pinned to the
+  root. Subsumption is now property-tested against actual matching.
+- **`validate_pattern` accepted `[...]` and leading `!`** because it delegated
+  to a general-purpose glob crate. GitHub documents both as unsupported, so
+  such a rule silently owns nothing while looking valid.
+- **Crash on non-ASCII CODEOWNERS lines.** `completion` and `signature_help`
+  sliced lines using the LSP `character` offset as a byte index; it counts
+  UTF-16 code units, so anything non-ASCII earlier on the line panicked the
+  request on every keystroke.
+- **Wrong owner highlighted by workspace symbols** — a substring search matched
+  `@alice` inside `@alice-admin`.
+- **GitHub cache poisoned itself permanently.** A rate limit or offline lookup
+  was persisted as if it were a verdict, and retries are gated on the owner not
+  already being cached, so one 429 meant that owner was never re-checked again.
+  Transient failures now stay in memory only, and the server honours the 24h
+  cache TTL that the CLI paths already applied.
+- **GitHub requests had no timeout**, so a hung connection stalled a document's
+  diagnostics indefinitely. Now 10s.
+- **`check --json` always exited 0** where plain `check` exited 1 for the same
+  unowned file, silently passing CI gates built on it.
+- **`owners_start` reported the wrong offset** when an owner also appeared
+  inside its own pattern (`api/src api`), skewing hover and rename.
+
+### Changed
+
+- Dependency floors moved to current releases (fast-glob 1.1, regex 1.13,
+  clap 4.6, rayon 1.12). `cargo audit` clean.
+- **Dropped `once_cell`** in favour of `std::sync::LazyLock` — one fewer
+  dependency on the published parser crate.
+- **MSRV declared per crate**: `codeowners-parser` 1.80, `codeowners-lsp` 1.86.
+  The parser's lower floor is deliberate and CI-enforced, since it is published
+  for third parties; the LSP is already pulled to 1.86 by reqwest.
+- CI actions were three majors behind and unpinned despite f0310f9 claiming
+  otherwise (that commit reached exactly one action). All now SHA-pinned.
+- **crates.io publish existence check moved to the sparse index.** The web API
+  rejects unauthenticated automated traffic, and a rejection is indistinguishable
+  from "crate absent", so the check would report work to do on every run. The
+  job also gained a `workflow_dispatch` path, so a publish that failed after its
+  release was cut can be retried without an undeserved version bump.
+
+### Documentation
+
+- Go-to-definition and linked editing were documented as working in both the
+  README and CLAUDE.md; both were deliberately removed in 0.16.2 and 0.16.1.
+- The parser crate's docs advertised a compiled-pattern cache that does not
+  exist, and linked a constructor under the wrong name.
+- `codeowners-cli config` was the only subcommand missing from the README.
+
 ## [0.18.0] - 2026-04-18
 
 ### Added

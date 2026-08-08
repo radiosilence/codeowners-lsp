@@ -61,7 +61,6 @@ Key structs:
 
 - Hover: ownership info with GitHub metadata
 - Inlay hints: ownership at line 0
-- Go-to-definition: jump to matching CODEOWNERS rule
 - Code actions: take ownership (individual/team/custom)
 
 **CODEOWNERS file:**
@@ -77,7 +76,6 @@ Key structs:
 - Rename: rename owner across all rules
 - Signature help: pattern syntax docs while typing
 - Selection range: smart expand selection
-- Linked editing: edit owner in all places at once
 - Code actions: remove dead rules, dedupe owners, add catch-all
 
 ## Config
@@ -97,7 +95,9 @@ Key structs:
 - `codeowners-parser` is `#![deny(missing_docs)]` — every pub item needs a doc comment.
 - LSP's `lib.rs` re-exports `parser`/`pattern`/`validation` from parser crate, so `crate::parser::X` still resolves inside LSP code.
 - `#[allow(dead_code)]` in LSP is still needed for functions only called from one binary context.
-- GitHub usernames: alphanumeric, hyphens, underscores only (NO periods).
+- GitHub usernames/orgs: alphanumeric and hyphens only — no underscores, no periods (`validation.rs`).
 - CODEOWNERS does NOT support `[...]` character classes or `!` negation (unlike gitignore).
 - Owner matching in handlers must use forward search with word boundaries, not `find()`/`rfind()`.
-- `check_file_ownership_parsed()` exists for hot loops; `check_file_ownership()` re-parses each call.
+- `check_file_ownership_parsed()` exists for hot loops; `check_file_ownership()` re-parses each call. Neither caches compiled patterns — use `CompiledPattern` directly if that matters.
+- Go-to-definition and linked editing are deliberately disabled (see CHANGELOG 0.16.1/0.16.2); the handlers still exist. Don't "fix" the capability flags.
+- LSP `Position.character` is a UTF-16 offset — never slice a line with it. Use `handlers::util::utf16_offset_to_byte_index`.
