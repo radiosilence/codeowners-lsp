@@ -25,6 +25,10 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Branch-scoped caches aren't readable from other branches, so a PR
+          # saving here only evicts the main entry every PR restores from.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --all-targets
 
   clippy:
@@ -37,6 +41,10 @@ jobs:
           toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Branch-scoped caches aren't readable from other branches, so a PR
+          # saving here only evicts the main entry every PR restores from.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets -- -D warnings
 
   fmt:
@@ -59,6 +67,10 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Branch-scoped caches aren't readable from other branches, so a PR
+          # saving here only evicts the main entry every PR restores from.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --all
 
   # codeowners-parser is published for third parties, so its low MSRV is a
@@ -74,6 +86,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: msrv
+          # Branch-scoped caches aren't readable from other branches, so a PR
+          # saving here only evicts the main entry every PR restores from.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check -p codeowners-parser
 
   # Matrix build — runs on PRs (no release) and on main (with release)
@@ -122,6 +137,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.target }}
+          # Seven targets, so seven full release target/ trees — by far the
+          # largest thing this repository puts in its 10GB cache budget.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
@@ -231,6 +249,10 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Branch-scoped caches aren't readable from other branches, so a PR
+          # saving here only evicts the main entry every PR restores from.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Publish codeowners-parser
         env:
