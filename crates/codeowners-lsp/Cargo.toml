@@ -1,6 +1,6 @@
 [package]
 name = "codeowners-lsp"
-version = "0.18.0"
+version = "0.18.1"
 edition.workspace = true
 rust-version = "1.86"
 license.workspace = true
