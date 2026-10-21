@@ -35,9 +35,11 @@ env:
 # nor is a manual run. The group is chosen before any job runs, so it cannot
 # ask `changes`: a push may release when its head commit changes the LSP
 # crate's manifest, where the version lives, at the cost of also keeping a
-# dependency change there from being cancelled.
+# dependency change there from being cancelled. A manual run joins the group
+# of the commit it runs on, so a retry waits for that commit's release push
+# rather than releasing the same version alongside it.
 concurrency:
-  group: "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || contains(github.event.head_commit.modified, 'crates/codeowners-lsp/Cargo.toml') && format('release-{0}', github.sha) || 'main' }}"
+  group: "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && format('release-{0}', github.sha) || contains(github.event.head_commit.modified, 'crates/codeowners-lsp/Cargo.toml') && format('release-{0}', github.sha) || 'main' }}"
   cancel-in-progress: "${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !contains(github.event.head_commit.modified, 'crates/codeowners-lsp/Cargo.toml')) }}"
 
 jobs:
@@ -172,22 +174,31 @@ jobs:
             apple=$rust windows=$rust
             if [ "$EVENT" = "pull_request" ] && ! touches "$build"; then
               apple=false windows=false
+              # The file before and after, so a deleted platform branch counts.
               for f in $(printf '%s\n' "$files" | grep '\.rs$' || true); do
-                [ -f "$f" ] || continue
-                if grep -E 'target_os *= *"(macos|ios)"|target_vendor *= *"apple"' "$f" > /dev/null; then
+                src=$({ git show "HEAD:$f"; git show "$base:$f"; } 2>/dev/null || true)
+                if grep -E 'target_os *= *"(macos|ios)"|target_vendor *= *"apple"|cfg!?\(.*\bunix\b|cfg_attr\(.*\bunix\b' <<< "$src" > /dev/null; then
                   apple=true
                 fi
-                if grep -E 'target_os *= *"windows"|target_family *= *"windows"|cfg\((not\()?windows' "$f" > /dev/null; then
+                if grep -E 'target_(os|family) *= *"windows"|cfg!?\(.*\b(windows|unix)\b|cfg_attr\(.*\b(windows|unix)\b' <<< "$src" > /dev/null; then
                   windows=true
                 fi
               done
             fi
           fi
-          # A release runs everything it ships.
+          # A release runs everything it ships. A release push is not checked
+          # on macOS again when its parent passed on main: that run and the
+          # release pull request covered it, and `macos-release` builds it.
+          # Otherwise an earlier push's changes may have reached main with
+          # their run cancelled, so they are checked here.
           if [ "$release" = true ]; then
             dist=true windows=true
             if [ "$EVENT" = "pull_request" ]; then
               rust=true parser=true apple=true
+            elif [ "$EVENT" = push ] && [ -n "$base" ] && [ "$(git rev-parse "$base")" = "$(git rev-parse HEAD^1)" ]; then
+              apple=false
+            else
+              apple=true
             fi
           fi
           {
@@ -249,11 +260,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     timeout-minutes: 30
-    # A newer push cancels a pull request's checks, never main's: a release
-    # run's publishing waits on them.
-    concurrency:
-      group: test-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-      cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
@@ -272,9 +278,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     timeout-minutes: 30
-    concurrency:
-      group: lint-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-      cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
@@ -322,19 +325,18 @@ jobs:
           cache-on-failure: true
       - run: cargo check -p codeowners-parser
 
-  # What `cargo publish` uploads, built as crates.io will see it, both crates
-  # together so the LSP resolves the parser as packaged here: a file left out
-  # of a package, or a dependency that only resolves locally, fails here
-  # rather than in the middle of a release.
+  # What `cargo publish` uploads, built as crates.io will see it: a file left
+  # out of a package, or a dependency that only resolves locally, fails here
+  # rather than in the middle of a release. The LSP is built against the
+  # parser the release will use: the one on crates.io when the parser's
+  # version is already published (the release skips it), otherwise the one
+  # packaged here alongside it.
   package:
     name: Package
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     timeout-minutes: 30
-    concurrency:
-      group: package-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-      cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
@@ -345,7 +347,13 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: package
           cache-on-failure: true
-      - run: cargo publish --workspace --dry-run
+      - run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/codeowners-parser/Cargo.toml | head -1)
+          if scripts/crate-version-published.sh codeowners-parser "$version"; then
+            cargo publish -p codeowners-lsp --dry-run
+          else
+            cargo publish --workspace --dry-run
+          fi
       # `cargo publish` unpacks the crates under target/package, which the
       # cache step's clean-up trips over.
       - if: always()
@@ -360,9 +368,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.dist == 'true'
     timeout-minutes: 45
-    concurrency:
-      group: build-${{ matrix.target }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
@@ -405,9 +410,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
     timeout-minutes: 45
-    concurrency:
-      group: windows-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-      cancel-in-progress: true
     env:
       TARGET: x86_64-pc-windows-msvc
     steps:
@@ -439,17 +441,14 @@ jobs:
   # not hide the other. A release pull request also builds and packages both
   # binaries, unsigned, so packaging breaks before the version merges.
   #
-  # A release push is not checked again: its pull request and main's previous
-  # push were. Its build belongs to `macos-release`.
+  # Whether a release push is checked here is decided in `changes`. Its
+  # signed build belongs to `macos-release`.
   apple:
     name: Apple
     runs-on: macos-15
     needs: changes
-    if: needs.changes.outputs.apple == 'true' && !(github.event_name != 'pull_request' && needs.changes.outputs.release == 'true')
+    if: needs.changes.outputs.apple == 'true'
     timeout-minutes: 60
-    concurrency:
-      group: apple-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-      cancel-in-progress: true
     env:
       PACKAGE: ${{ needs.changes.outputs.release == 'true' }}
     steps:
@@ -595,19 +594,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [changes, checks, build, windows, macos-release, crates]
-    if: ${{ !cancelled() && needs.changes.outputs.release == 'true' && needs.changes.result == 'success' && needs.checks.result == 'success' && needs.build.result == 'success' && needs.windows.result == 'success' && needs.macos-release.result == 'success' && needs.crates.result == 'success' }}
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.release == 'true' && needs.changes.result == 'success' && needs.checks.result == 'success' && needs.build.result == 'success' && needs.windows.result == 'success' && needs.macos-release.result == 'success' && needs.crates.result == 'success' }}
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.changes.outputs.version }}
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      # A release that exists already is left as it is. Only a 404 means it
+      # does not; any other error fails rather than guessing.
+      - id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if out=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION" 2>&1); then
+            echo "::notice::v$VERSION is already released"
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$out" == *"HTTP 404"* ]]; then
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::cannot tell whether v$VERSION is released: $out"
+            exit 1
+          fi
+      - if: steps.exists.outputs.released == 'false'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
           pattern: ${{ env.BINARY_NAME }}-*
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+      - if: steps.exists.outputs.released == 'false'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          tag_name: v${{ needs.changes.outputs.version }}
+          tag_name: v${{ env.VERSION }}
           target_commitish: ${{ github.sha }}
-          name: v${{ needs.changes.outputs.version }}
+          name: v${{ env.VERSION }}
           generate_release_notes: true
           files: |
             artifacts/**/*.tar.gz
