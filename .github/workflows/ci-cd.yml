@@ -1,293 +1,633 @@
 name: CI/CD
 
+# Two halves in one run, so the second can use what the first built.
+#
+# CI checks the change and ends in `Checks`, the one status the ruleset
+# requires. Each job runs only for the domains the change touches (see
+# `changes`); a skipped job passes `Checks`, a failed or cancelled one fails
+# it. Jobs can therefore be added, renamed or skipped without touching branch
+# protection.
+#
+# CD runs on main after `Checks`, and only for a release: a push that changes
+# the LSP's version, or a manual run, which releases whatever version is not
+# out yet and is how a failed release is retried. It publishes both crates to
+# crates.io, then the GitHub release with the binaries CI built. The signed
+# macOS release build, which CI has no use for, starts alongside the checks;
+# nothing is published until both have passed.
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: codeowners-lsp
 
+# The macOS runners are few, so a run nobody will look at gives way to the
+# next. A pull request's newer push cancels its older run; on main, a newer
+# push cancels an older one that releases nothing.
+#
+# A run that may release is in a group of its own and is never cancelled, and
+# nor is a manual run. The group is chosen before any job runs, so it cannot
+# ask `changes`: a push may release when its head commit changes the LSP
+# crate's manifest, where the version lives, at the cost of also keeping a
+# dependency change there from being cancelled. A manual run joins the group
+# of the commit it runs on, so a retry waits for that commit's release push
+# rather than releasing the same version alongside it.
+concurrency:
+  group: "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && format('release-{0}', github.sha) || contains(github.event.head_commit.modified, 'crates/codeowners-lsp/Cargo.toml') && format('release-{0}', github.sha) || 'main' }}"
+  cancel-in-progress: "${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !contains(github.event.head_commit.modified, 'crates/codeowners-lsp/Cargo.toml')) }}"
+
 jobs:
-  check:
-    name: Check
+  # ── CI ──────────────────────────────────────────────────────────────────
+
+  changes:
+    name: Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      parser: ${{ steps.filter.outputs.parser }}
+      dist: ${{ steps.filter.outputs.dist }}
+      apple: ${{ steps.filter.outputs.apple }}
+      windows: ${{ steps.filter.outputs.windows }}
+      release: ${{ steps.filter.outputs.release }}
+      version: ${{ steps.filter.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          fetch-depth: 2
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+        # The domains a change touches, from its diff. A pull request's is
+        # against its base. A push's is against the last commit on main whose
+        # run passed, so a push whose run was cancelled by the next one is
+        # still checked with it. A manual run, a push with no passed commit
+        # within reach, or a diff that cannot be worked out, runs everything.
+        #
+        # Allowlists, so the question is "did any source of this domain
+        # change?" rather than "was everything recognisably irrelevant?". The
+        # cost is that a new top-level directory of code is invisible here
+        # until it is added below. Markdown is documentation wherever it sits.
+        #
+        # Cargo.lock is not committed, so every build resolves dependencies
+        # afresh and no lockfile change can reach a domain.
+        #
+        # Steps run under `bash -eo pipefail`, where grep finding nothing is a
+        # failing command rather than an answer, so every question is asked in
+        # a condition, and no grep exits early (`-q`) on a pipe whose writer
+        # would then fail.
+        run: |
+          rust=true parser=true dist=true apple=true windows=true release=false
+          version_of() { sed -n 's/^version = "\(.*\)"/\1/p' | head -1; }
+          manifest=crates/codeowners-lsp/Cargo.toml
+          # Empty when it cannot be found: then everything runs, since a
+          # narrower diff could leave a cancelled push's changes unchecked.
+          base=HEAD^1
+          if [ "$EVENT" = "push" ]; then
+            base=
+            if passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci-cd.yml --branch main --event push \
+                  --status success --limit 1 --json headSha --jq '.[0].headSha // empty') \
+              && [ -n "$passed" ] && git fetch -q --deepen=200 origin main \
+              && git merge-base --is-ancestor "$passed" HEAD; then
+              base=$passed
+              # A commit that already passed in another run diffs against its
+              # parent: against itself the diff would be empty.
+              if [ "$passed" = "$(git rev-parse HEAD)" ]; then
+                base=HEAD^1
+              fi
+            else
+              echo "::notice::no passed run on main within reach -- running everything"
+            fi
+          fi
+          # Whether this run releases, the one answer every release job reads.
+          # A pull request: a release PR (branch `release-v*`, or a version
+          # change), which runs everything. A push to main: it changes the
+          # version and that version is not out yet. A manual run on main,
+          # which is how a failed release is retried: whatever version is not
+          # out yet.
+          version=$(version_of < "$manifest")
+          bumped=false
+          # Against the commit before, not the diff base: a push landing while
+          # a release run is still going would otherwise see the same bump and
+          # release it again. A bump that is not the head commit is released
+          # by a manual run.
+          if [ "$(git show "HEAD^1:$manifest" 2>/dev/null | version_of)" != "$version" ]; then
+            bumped=true
+          fi
+          case "$EVENT" in
+            pull_request)
+              case "$HEAD_REF" in release-v*) bumped=true ;; esac
+              release=$bumped
+              ;;
+            *)
+              # Only a 404 means the version is not out. Any other failure
+              # stops the run: guessing either way releases twice or never.
+              if [ "$GITHUB_REF" = refs/heads/main ] && { [ "$EVENT" = workflow_dispatch ] || [ "$bumped" = true ]; }; then
+                if ! out=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$version" 2>&1); then
+                  if [[ "$out" != *"HTTP 404"* ]]; then
+                    echo "::error::cannot tell whether v$version is released: $out"
+                    exit 1
+                  fi
+                  release=true
+                fi
+              fi
+              ;;
+          esac
+          touches() { printf '%s\n' "$files" | grep -E "$1" | grep -vE '\.md$' > /dev/null; }
+          if [ "$EVENT" != "workflow_dispatch" ] && [ -n "$base" ] && files=$(git diff --name-only "$base" HEAD); then
+            echo "changes since $(git rev-parse --short "$base"):"
+            printf '%s\n' "$files" | sed 's/^/  /'
+
+            # Anything cargo compiles or packages, or that decides how.
+            build='^Cargo\.toml$|^crates/[^/]+/Cargo\.toml$|^\.cargo/|^rust-toolchain|^\.github/'
+            touches "^crates/|^\.?(rustfmt|clippy)\.toml$|$build" || rust=false
+
+            # The parser's minimum Rust version: its sources and the manifests.
+            touches "^crates/codeowners-parser/|$build" || parser=false
+
+            # What the Linux release binaries' build adds to the checks: the
+            # musl targets and the ARM runner. A pull request builds them only when the manifests, the
+            # toolchain or CI change; main whenever the code does, which also
+            # warms the cache a release builds from.
+            dist=$rust
+            if [ "$EVENT" = "pull_request" ]; then
+              touches "$build" || dist=false
+            fi
+
+            # The macOS and Windows runners are few or dear. The crates are
+            # pure Rust with no platform-specific code, and the Linux jobs
+            # check all of it. A pull request holds one of those runners only
+            # for what Linux cannot check: the platform's toolchain and
+            # linker, through the manifests, the toolchain or CI, or a change
+            # to a Rust file that names the platform in a cfg. Main runs them
+            # for any Rust change.
+            apple=$rust windows=$rust
+            if [ "$EVENT" = "pull_request" ] && ! touches "$build"; then
+              apple=false windows=false
+              # The file before and after, so a deleted platform branch counts.
+              for f in $(printf '%s\n' "$files" | grep '\.rs$' || true); do
+                src=$({ git show "HEAD:$f"; git show "$base:$f"; } 2>/dev/null || true)
+                if grep -E 'target_os *= *"(macos|ios)"|target_vendor *= *"apple"|cfg!?\(.*\bunix\b|cfg_attr\(.*\bunix\b' <<< "$src" > /dev/null; then
+                  apple=true
+                fi
+                if grep -E 'target_(os|family) *= *"windows"|cfg!?\(.*\b(windows|unix)\b|cfg_attr\(.*\b(windows|unix)\b' <<< "$src" > /dev/null; then
+                  windows=true
+                fi
+              done
+            fi
+          fi
+          # A release runs everything it ships. A release push is not checked
+          # on macOS again when its parent passed on main: that run and the
+          # release pull request covered it, and `macos-release` builds it.
+          # Otherwise an earlier push's changes may have reached main with
+          # their run cancelled, so they are checked here.
+          if [ "$release" = true ]; then
+            dist=true windows=true
+            if [ "$EVENT" = "pull_request" ]; then
+              rust=true parser=true apple=true
+            elif [ "$EVENT" = push ] && [ -n "$base" ] && [ "$(git rev-parse "$base")" = "$(git rev-parse HEAD^1)" ]; then
+              apple=false
+            else
+              apple=true
+            fi
+          fi
+          {
+            echo "rust=$rust"
+            echo "parser=$parser"
+            echo "dist=$dist"
+            echo "apple=$apple"
+            echo "windows=$windows"
+            echo "release=$release"
+            echo "version=$version"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  # GitHub has no priority among its runners, and the account's few macOS ones
+  # are what a release waits on. A release cancels this repository's pull
+  # request runs, which are re-run from their page or by the next push, and
+  # main's earlier runs that cannot be releasing, which a newer one supersedes:
+  # a push changing the LSP crate's manifest is left alone, as the workflow's
+  # `concurrency` leaves it. At the start rather than in CD, so the release
+  # build that starts alongside the checks finds the runners free, and that
+  # build waits for it. A job of its own, so only it holds a token that can
+  # cancel runs. Best effort: a run it cannot list or cancel only waits longer
+  # for a runner.
+  make-room:
+    name: Make room for the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: changes
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.release == 'true'
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELF: ${{ github.run_id }}
+        run: |
+          for status in requested queued pending waiting in_progress; do
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow ci-cd.yml --status "$status" --limit 100 \
+              --json databaseId,event,headBranch,headSha \
+              --jq ".[] | select(.databaseId < $SELF)
+                | select(.event == \"pull_request\" or (.event == \"push\" and .headBranch == \"main\"))
+                | \"\\(.databaseId) \\(.event) \\(.headSha)\"" \
+              || echo "::warning::could not list $status runs" >&2
+          done | sort -u | while read -r id event sha; do
+            if [ "$event" = push ]; then
+              files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[].filename') || continue
+              if grep -qx 'crates/codeowners-lsp/Cargo.toml' <<< "$files"; then
+                continue
+              fi
+            fi
+            echo "cancelling run $id"
+            gh run cancel "$id" --repo "$GITHUB_REPOSITORY" || true
+          done
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          # Branch-scoped caches aren't readable from other branches, so a PR
-          # saving here only evicts the main entry every PR restores from.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --all-targets
+          shared-key: test
+          cache-on-failure: true
+      - run: cargo test --workspace
 
-  clippy:
+  lint:
     name: Clippy
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          # Branch-scoped caches aren't readable from other branches, so a PR
-          # saving here only evicts the main entry every PR restores from.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --all-targets -- -D warnings
+          shared-key: lint
+          cache-on-failure: true
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  fmt:
+  format:
     name: Format
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          # Branch-scoped caches aren't readable from other branches, so a PR
-          # saving here only evicts the main entry every PR restores from.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test --all
-
   # codeowners-parser is published for third parties, so its low MSRV is a
-  # feature — guard it against creeping upward via a new std API or dependency.
+  # feature: guard it against creeping upward via a new std API or dependency.
   msrv:
     name: MSRV (parser)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.parser == 'true'
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: "1.80"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: msrv
-          # Branch-scoped caches aren't readable from other branches, so a PR
-          # saving here only evicts the main entry every PR restores from.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: msrv
+          cache-on-failure: true
       - run: cargo check -p codeowners-parser
 
-  # Matrix build — runs on PRs (no release) and on main (with release)
+  # What `cargo publish` uploads, built as crates.io will see it: a file left
+  # out of a package, or a dependency that only resolves locally, fails here
+  # rather than in the middle of a release. The LSP is built against the
+  # parser the release will use: the one on crates.io when the parser's
+  # version is already published (the release skips it), otherwise the one
+  # packaged here alongside it.
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: package
+          cache-on-failure: true
+      - run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/codeowners-parser/Cargo.toml | head -1)
+          if scripts/crate-version-published.sh codeowners-parser "$version"; then
+            cargo publish -p codeowners-lsp --dry-run
+          else
+            cargo publish --workspace --dry-run
+          fi
+      # `cargo publish` unpacks the crates under target/package, which the
+      # cache step's clean-up trips over.
+      - if: always()
+        run: rm -rf target/package
+
+  # The Linux release binaries, glibc and static (musl), each on its own
+  # architecture, on runners pinned to an OS version. Built once: a release
+  # attaches these tarballs as they are.
   build:
     name: Build ${{ matrix.target }}
-    needs: [check, clippy, fmt, test]
     runs-on: ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.dist == 'true'
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive: tar.gz
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            archive: tar.gz
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            archive: tar.gz
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-24.04-arm
-            archive: tar.gz
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            archive: tar.gz
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            archive: tar.gz
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            archive: zip
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
-
-      - name: Install musl-tools
-        if: contains(matrix.target, 'musl')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: ${{ matrix.target }}
-          # Seven targets, so seven full release target/ trees — by far the
-          # largest thing this repository puts in its 10GB cache budget.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: ${{ matrix.target }}
+          cache-on-failure: true
+      - run: cargo build --release --target ${{ matrix.target }}
+      # Tarred, because an artifact does not keep the executable bit; the
+      # tarball is the release's download as it stands.
+      - name: Package
+        run: tar -czf "$BINARY_NAME-${{ matrix.target }}.tar.gz" -C target/${{ matrix.target }}/release "$BINARY_NAME" codeowners-cli
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
+          path: ${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz
+          # Kept for a release, so a publish retried days later still finds them.
+          retention-days: ${{ needs.changes.outputs.release == 'true' && 90 || 7 }}
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+  # The Windows release binary. Nothing in the crates is Windows-specific, so
+  # building it is the check; a release attaches the zip as it is.
+  windows:
+    name: Build x86_64-pc-windows-msvc
+    runs-on: windows-2025
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    timeout-minutes: 45
+    env:
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: x86_64-pc-windows-msvc
+          cache-on-failure: true
+      - run: cargo build --release --target ${{ env.TARGET }}
+      - name: Package
+        shell: bash
+        run: |
+          cd "target/$TARGET/release"
+          7z a "../../../$BINARY_NAME-$TARGET.zip" "$BINARY_NAME.exe" codeowners-cli.exe
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ env.TARGET }}
+          path: ${{ env.BINARY_NAME }}-${{ env.TARGET }}.zip
+          retention-days: ${{ needs.changes.outputs.release == 'true' && 90 || 7 }}
 
-      # Developer ID signed and notarised, so the tarball runs from a browser
-      # download without clearing quarantine. Pull requests stay ad-hoc signed.
-      - name: Sign and notarise (macOS)
-        if: runner.os == 'macOS' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'schedule'
+  # Everything checked for Apple, on one runner: the account's macOS runners
+  # are few, and every macOS job in every repository queues behind the others.
+  # Clippy and the tests on macOS, each reported on its own so one failure does
+  # not hide the other. A release pull request also builds and packages both
+  # binaries, unsigned, so packaging breaks before the version merges.
+  #
+  # Whether a release push is checked here is decided in `changes`. Its
+  # signed build belongs to `macos-release`.
+  apple:
+    name: Apple
+    runs-on: macos-15
+    needs: changes
+    if: needs.changes.outputs.apple == 'true'
+    timeout-minutes: 60
+    env:
+      PACKAGE: ${{ needs.changes.outputs.release == 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - id: cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: apple
+          cache-on-failure: true
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
+        run: cargo test --workspace
+      - if: ${{ !cancelled() && steps.cache.outcome == 'success' && env.PACKAGE == 'true' }}
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --target "$target"
+            tar -czf "$BINARY_NAME-$target.tar.gz" -C "target/$target/release" "$BINARY_NAME" codeowners-cli
+          done
+          mkdir "$RUNNER_TEMP/unpacked"
+          tar -xzf "$BINARY_NAME-aarch64-apple-darwin.tar.gz" -C "$RUNNER_TEMP/unpacked"
+          "$RUNNER_TEMP/unpacked/codeowners-cli" --version
+
+  # The one status the ruleset requires. Skipped jobs are domains the change
+  # does not touch and pass; anything failed or cancelled fails it.
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes, test, lint, format, msrv, package, build, windows, apple]
+    if: always()
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad=$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(" ")')
+          if [ -n "$bad" ]; then
+            echo "::error::not passed: $bad"
+            exit 1
+          fi
+
+  # ── CD ──────────────────────────────────────────────────────────────────
+  #
+  # Main only, after `Checks`, and only for a release. `checks` runs whatever
+  # its needs did, so every job here states the results it depends on rather
+  # than relying on the default, which would skip it whenever any job upstream
+  # was skipped.
+
+  # The macOS binaries in release, Developer ID signed and notarised, so the
+  # tarballs run from a browser download without clearing quarantine. Started
+  # by `changes` rather than after `Checks`: it publishes nothing, so it builds
+  # while the checks run, and the publishing waits for both. The notarise
+  # action fails when a signing secret is missing, so a release never ships an
+  # unsigned binary.
+  macos-release:
+    name: Release (macOS)
+    runs-on: macos-15
+    timeout-minutes: 60
+    needs: [changes, make-room]
+    if: ${{ !cancelled() && needs.make-room.result == 'success' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: apple-release
+      - run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+      - name: Sign and notarise
         uses: radiosilence/blit-workflows/macos-notarise@c8a650dfa5a0fbe012c61eab28f615c1983aee18
         with:
           binaries: |
-            target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
-            target/${{ matrix.target }}/release/codeowners-cli
+            target/aarch64-apple-darwin/release/codeowners-lsp
+            target/aarch64-apple-darwin/release/codeowners-cli
+            target/x86_64-apple-darwin/release/codeowners-lsp
+            target/x86_64-apple-darwin/release/codeowners-cli
           certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           api-key-p8: ${{ secrets.APPLE_API_KEY_P8 }}
           api-key-id: ${{ secrets.APPLE_API_KEY_ID }}
           api-issuer-id: ${{ secrets.APPLE_API_ISSUER_ID }}
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
+      # The arm64 tarball's binary is run, so a package that would not start
+      # fails here rather than after a release.
+      - name: Package
         run: |
-          cd target/${{ matrix.target }}/release
-          tar -czvf ../../../${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz ${{ env.BINARY_NAME }} codeowners-cli
-
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          cd target/${{ matrix.target }}/release
-          7z a ../../../${{ env.BINARY_NAME }}-${{ matrix.target }}.zip ${{ env.BINARY_NAME }}.exe codeowners-cli.exe
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            tar -czf "$BINARY_NAME-$target.tar.gz" -C "target/$target/release" "$BINARY_NAME" codeowners-cli
+          done
+          mkdir "$RUNNER_TEMP/unpacked"
+          tar -xzf "$BINARY_NAME-aarch64-apple-darwin.tar.gz" -C "$RUNNER_TEMP/unpacked"
+          "$RUNNER_TEMP/unpacked/codeowners-cli" --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
-          path: ${{ env.BINARY_NAME }}-${{ matrix.target }}.${{ matrix.archive }}
+          name: ${{ env.BINARY_NAME }}-apple-darwin
+          path: ${{ env.BINARY_NAME }}-*-apple-darwin.tar.gz
+          retention-days: 90
 
-  # Check if version changed (main only — releases don't fire on PRs)
-  check-version:
-    name: Check Version
-    needs: [build]
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    outputs:
-      should_release: ${{ steps.check.outputs.should_release }}
-      version: ${{ steps.check.outputs.version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Check if version needs release
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          CURRENT=$(grep '^version' crates/codeowners-lsp/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "Current version: $CURRENT"
-          echo "version=$CURRENT" >> $GITHUB_OUTPUT
-
-          # Get latest release version from GitHub
-          RELEASED=$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null | sed 's/^v//' || echo "0.0.0")
-          echo "Latest released version: $RELEASED"
-
-          if [ "$CURRENT" != "$RELEASED" ]; then
-            echo "New version to release!"
-            echo "should_release=true" >> $GITHUB_OUTPUT
-          else
-            echo "Version already released"
-            echo "should_release=false" >> $GITHUB_OUTPUT
-          fi
-
-  # Create release (only if version changed)
-  release:
-    name: Release
-    needs: [check-version]
-    if: needs.check-version.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          path: artifacts
-
-      - name: Delete existing release and tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="v${{ needs.check-version.outputs.version }}"
-          # Delete release if exists
-          gh release delete "$VERSION" --yes 2>/dev/null || true
-          # Delete tag if exists
-          git push origin ":refs/tags/$VERSION" 2>/dev/null || true
-
-      - name: Create Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
-        with:
-          tag_name: v${{ needs.check-version.outputs.version }}
-          name: v${{ needs.check-version.outputs.version }}
-          draft: false
-          prerelease: false
-          files: artifacts/**/*
-          generate_release_notes: true
-
-  # Publish to crates.io. Parser must publish before the LSP because the LSP
-  # depends on it.
-  #
-  # Stays gated on check-version so that what lands on crates.io always
-  # corresponds to a tag. Publishing whatever happens to be on main would let
-  # the registry drift from the release it claims to be, and crates.io versions
-  # cannot be replaced. workflow_dispatch is the escape hatch for a publish that
-  # failed after its release was already cut — otherwise that needs a bump it
-  # has not earned.
-  publish-crates:
+  # Before the GitHub release, and once every binary it ships has built: a
+  # version on crates.io cannot be taken back, so it goes out only once the
+  # rest of the release can follow it, and a failure here leaves nothing
+  # released for a manual run to trip over. The parser goes first, since the
+  # LSP depends on it. Publishing errors on a version already out, so each
+  # crate is skipped when the index already has its version; a parser whose
+  # version did not change is skipped that way on every release.
+  crates:
     name: Publish to crates.io
-    needs: [check-version]
-    if: needs.check-version.outputs.should_release == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [changes, checks, build, windows, macos-release]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.release == 'true' && needs.changes.result == 'success' && needs.checks.result == 'success' && needs.build.result == 'success' && needs.windows.result == 'success' && needs.macos-release.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          for crate in codeowners-parser codeowners-lsp; do
+            version=$(sed -n 's/^version = "\(.*\)"/\1/p' "crates/$crate/Cargo.toml" | head -1)
+            if scripts/crate-version-published.sh "$crate" "$version"; then
+              echo "$crate $version is already on crates.io"
+              continue
+            fi
+            cargo publish -p "$crate"
+          done
+
+  # Last, so a release never names a crate or a binary that does not exist.
+  # Creates the tag through the API, on the commit that was built.
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [changes, checks, build, windows, macos-release, crates]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.release == 'true' && needs.changes.result == 'success' && needs.checks.result == 'success' && needs.build.result == 'success' && needs.windows.result == 'success' && needs.macos-release.result == 'success' && needs.crates.result == 'success' }}
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.changes.outputs.version }}
+    steps:
+      # A release that exists already is left as it is. Only a 404 means it
+      # does not; any other error fails rather than guessing.
+      - id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if out=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION" 2>&1); then
+            echo "::notice::v$VERSION is already released"
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$out" == *"HTTP 404"* ]]; then
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::cannot tell whether v$VERSION is released: $out"
+            exit 1
+          fi
+      - if: steps.exists.outputs.released == 'false'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          # Branch-scoped caches aren't readable from other branches, so a PR
-          # saving here only evicts the main entry every PR restores from.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Publish codeowners-parser
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          VERSION=$(grep '^version' crates/codeowners-parser/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          if scripts/crate-version-published.sh codeowners-parser "$VERSION"; then
-            echo "codeowners-parser $VERSION already on crates.io, skipping"
-          else
-            cargo publish -p codeowners-parser
-            # Give the index a moment to update so the dependent publish resolves.
-            sleep 30
-          fi
-
-      - name: Publish codeowners-lsp
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          VERSION=$(grep '^version' crates/codeowners-lsp/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          if scripts/crate-version-published.sh codeowners-lsp "$VERSION"; then
-            echo "codeowners-lsp $VERSION already on crates.io, skipping"
-          else
-            cargo publish -p codeowners-lsp
-          fi
+          path: artifacts
+          pattern: ${{ env.BINARY_NAME }}-*
+      - if: steps.exists.outputs.released == 'false'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: v${{ env.VERSION }}
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip

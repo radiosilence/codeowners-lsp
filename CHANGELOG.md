@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **One CI/CD pipeline gated by `Checks`.** Each job runs only when a change touches what it checks, and `Checks` is the single status the ruleset requires. A release is decided once, from the version and whether its GitHub release exists, and publishes crates.io before the GitHub release, so a failed publish never leaves a release without its crates. The redundant `cargo check` job is gone (Clippy covers it), and a new `Package` job dry-runs the crates.io publish of both crates on every Rust change.
+
 ## [0.18.1] - 2026-09-29
 
 ### Changed

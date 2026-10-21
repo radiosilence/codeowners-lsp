@@ -14,6 +14,14 @@ cargo bench --bench parsing  # run a single benchmark group
 ./scripts/bench-summary.sh   # print summary table from last run
 ```
 
+## CI/CD
+
+`.github/workflows/ci-cd.yml` is one pipeline. Its CI half ends in `Checks`, the only status the ruleset requires; it passes when every other job succeeded or was skipped. The `changes` job works out from the diff which domains a change touches (a pull request against its base, a push against the last main commit whose run passed; a manual run, or a diff it cannot work out, runs everything), and each job runs only for its domain, so a docs-only change skips every Rust job. Markdown never counts, and `.github/` counts for every domain. macOS and Windows runners are scarce or dear, so pull requests use them only when a manifest, the toolchain or CI changed, or a Rust file names that platform in a cfg; main uses them for any Rust change.
+
+To add a domain, give `changes` an output and an allowlist of the paths that reach it, gate the new jobs with `if: needs.changes.outputs.<domain> == 'true'`, and add them to `Checks`'s `needs`.
+
+Releasing: bump `version` in `crates/codeowners-lsp/Cargo.toml` (and the parser's, if it changed) and merge. The push sees the bump, builds the signed macOS binaries alongside the checks, then publishes both crates to crates.io (each skipped if its version is already there) and creates the `v<version>` GitHub release with every binary. A failed release is retried by running the workflow manually on main, which releases whatever version has no GitHub release yet.
+
 ## Architecture
 
 Cargo workspace with two member crates:
