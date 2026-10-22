@@ -31,6 +31,16 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --all-targets
 
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The image bundles shellcheck, which checks the `run:` scripts.
+      - run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -94,7 +104,7 @@ jobs:
   # Matrix build — runs on PRs (no release) and on main (with release)
   build:
     name: Build ${{ matrix.target }}
-    needs: [check, clippy, fmt, test]
+    needs: [check, actionlint, clippy, fmt, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -194,7 +204,7 @@ jobs:
         run: |
           CURRENT=$(grep '^version' crates/codeowners-lsp/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "Current version: $CURRENT"
-          echo "version=$CURRENT" >> $GITHUB_OUTPUT
+          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
 
           # Get latest release version from GitHub
           RELEASED=$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null | sed 's/^v//' || echo "0.0.0")
@@ -202,10 +212,10 @@ jobs:
 
           if [ "$CURRENT" != "$RELEASED" ]; then
             echo "New version to release!"
-            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
           else
             echo "Version already released"
-            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
           fi
 
   # Create release (only if version changed)
