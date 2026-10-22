@@ -9,6 +9,7 @@ cargo build          # dev build
 cargo build --release
 cargo clippy         # NO warnings allowed
 cargo fmt            # always run after changes
+actionlint           # after editing .github/workflows (CI runs it with shellcheck)
 cargo bench          # run full benchmark suite
 cargo bench --bench parsing  # run a single benchmark group
 ./scripts/bench-summary.sh   # print summary table from last run
